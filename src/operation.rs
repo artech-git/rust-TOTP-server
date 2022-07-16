@@ -1,43 +1,51 @@
-use koibumi_base32 as base32;
-use std::io::{self, Write};
 use std::time::SystemTime;
 use totp_lite::{totp_custom, Sha1, DEFAULT_STEP};
 
+use rand::distributions::Alphanumeric;
+use rand::Rng;
 
+use crate::obj::KEY_SIZE;
 
 //return a random set of string which we can use to create a QR code
 pub fn generate_secret() -> String {
-    "abcdefghijkl".to_string()
-} 
+    // const STR_LEN: usize = 10;
+    let rand_str = rand::thread_rng()
+        .sample_iter(&Alphanumeric)
+        .take(KEY_SIZE)
+        .map(char::from)
+        .collect();
 
-//create the on time based OTP out of the given secret 
-pub fn get_secret(input: &String) -> Result<String,()> {
-    
-        let length = input.trim().len();
+    rand_str
+}
 
-        // if length != 16 && length != 26 && length != 32 {
-        //     tracing::log::error!("Invalid TOTP secret, must be 16, 26 or 32 characters.");
-        //     return Err(());            
-        // }
+//create the on time based OTP out of the given secret
+pub fn get_secret(input: &String) -> Result<String, ()> {
+    let length = input.trim().chars().count();
 
-        // The number of seconds since the Unix Epoch, used to calcuate a TOTP secret.
-        let seconds: u64 = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+    if length != (KEY_SIZE as usize) {
+        tracing::log::error!("Invalid TOTP secret key size ");
+        return Err(());
+    }
 
-        // Calculate a 6 digit TOTP two-factor authentication code.
-        let token = 
-            totp_custom::<Sha1>(
-                // Calculate a new code every 30 seconds.
-                DEFAULT_STEP,
-                // Calculate a 6 digit code.
-                6,
-                // Convert the secret into bytes using base32::decode().
-                &base32::decode(&input.trim().to_lowercase()).unwrap(),
-                // Seconds since the Unix Epoch.
-                seconds,
-            );
+    // The number of seconds since the Unix Epoch, used to calcuate a TOTP secret.
+    let seconds: u64 = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
 
-        return Ok(token);
+    let base = input.as_bytes().to_vec();
+
+    // Calculate a 6 digit TOTP two-factor authentication code.
+    let token = totp_custom::<Sha1>(
+        // Calculate a new code every 30 seconds.
+        DEFAULT_STEP,
+        // Calculate a 6 digit code.
+        crate::obj::TOTP_SIZE,
+        // Convert the secret into bytes using base32::decode().
+        &base,
+        // Seconds since the Unix Epoch.
+        seconds,
+    );
+
+    return Ok(token);
 }
