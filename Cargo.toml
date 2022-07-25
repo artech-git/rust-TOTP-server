@@ -39,3 +39,6 @@ rand = "0.8.5"
 lazy_static = "1.4.0"
 
 qrcode-generator = "4.1.6"
+
+config = "0.13.1"
+
