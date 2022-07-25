@@ -1,11 +1,48 @@
+use std::collections::HashMap;
+
+use config::Config;
+use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
+use crate::eval_constants::get_totp_size_value;
 //==================================================================================================================
 
 pub const KEY_SIZE: usize = 8;
 pub const TOTP_SIZE: u32 = 6;
 pub const STEP_SIZE: u64 = 30;
+
+pub const FILE_PATH: &str = "./settings.toml";
+
+pub static KEY_MAP: Lazy<HashMap<String, String>> = Lazy::new(|| {
+    let settings = match Config::builder()
+        // Add in `./Settings.toml`
+        .add_source(config::File::with_name(FILE_PATH))
+        // Add in settings from the environment (with a prefix of APP)
+        // Eg.. `APP_DEBUG=1 ./target/app` would set the `debug` key
+        .add_source(config::Environment::with_prefix("APP"))
+        .build()
+    {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::log::error!("cannot open the file: {}", e);
+            panic!();
+        }
+    };
+
+    let hm = match settings.try_deserialize::<HashMap<String, String>>() {
+        Ok(v) => {
+            tracing::log::info!("deserialization succesfull");
+            v
+        }
+        Err(e) => {
+            tracing::log::error!("error deserialization of values: {}", e);
+            panic!();
+        }
+    };
+
+    return hm;
+});
 
 //==================================================================================================================
 #[derive(Debug, Serialize, Deserialize)]
@@ -20,7 +57,7 @@ impl VerifyUser {
             return false;
         }
 
-        if self.token.chars().count() != (TOTP_SIZE as usize) {
+        if self.token.chars().count() != (get_totp_size_value() as usize) {
             return false;
         }
         lazy_static! {//todo evaluate the email constrain too

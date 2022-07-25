@@ -9,6 +9,8 @@ mod auth;
 mod db;
 mod obj;
 mod operation;
+mod test;
+mod eval_constants;
 
 use crate::auth::{register_user, verification};
 

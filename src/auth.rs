@@ -3,7 +3,7 @@ use http::header::{HeaderMap, CONTENT_ENCODING};
 use http::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
 use totp_rs::{Algorithm, TOTP};
 
-use crate::obj::{STEP_SIZE, TOTP_SIZE};
+use crate::eval_constants::{get_step_size_value, get_totp_size_value};
 use crate::{
     db::DB,
     obj::{User, VerifyUser},
@@ -82,9 +82,9 @@ pub async fn register_user(Json(payload): Json<User>) -> impl IntoResponse {
 
         let totp = match TOTP::new(
             Algorithm::SHA1,
-            TOTP_SIZE as usize,
+            get_totp_size_value() as usize,
             0,
-            crate::obj::STEP_SIZE,
+            get_step_size_value(),
             secret_key.clone(),
             Some("Rust server".to_string()),
             payload.email,
