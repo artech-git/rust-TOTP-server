@@ -1,0 +1,3 @@
+KEY_SIZE = "8"
+TOTP_SIZE = "6"
+STEP_SIZE = "30" #define the seconds elasped before generating the new code
