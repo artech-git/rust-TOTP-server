@@ -7,10 +7,10 @@ extern crate rand;
 
 mod auth;
 mod db;
+mod eval_constants;
 mod obj;
 mod operation;
 mod test;
-mod eval_constants;
 
 use crate::auth::{register_user, verification};
 

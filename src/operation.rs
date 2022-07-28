@@ -4,9 +4,7 @@ use totp_lite::{totp_custom, Sha1, DEFAULT_STEP};
 use rand::distributions::Alphanumeric;
 use rand::Rng;
 
-use crate::{eval_constants::{get_key_size_value, get_totp_size_value}};
-
-
+use crate::eval_constants::{get_key_size_value, get_totp_size_value};
 
 //return a random set of string which we can use to create a QR code
 pub fn generate_secret() -> String {

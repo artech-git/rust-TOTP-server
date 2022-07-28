@@ -1,6 +1,5 @@
-use crate::obj::KEY_MAP;
 use crate::obj::FILE_PATH;
-
+use crate::obj::KEY_MAP;
 
 pub fn get_key_size_value() -> usize {
     lazy_static! {
@@ -26,9 +25,7 @@ pub fn get_key_size_value() -> usize {
 }
 
 pub fn get_step_size_value() -> u64 {
-
     lazy_static! {
-    
         pub static ref VALUE: String = match KEY_MAP.get("STEP_SIZE") {
             Some(v) => v.to_owned(),
             None => {
@@ -51,9 +48,7 @@ pub fn get_step_size_value() -> u64 {
 }
 
 pub fn get_totp_size_value() -> u32 {
-
     lazy_static! {
-    
         pub static ref VALUE: String = match KEY_MAP.get("TOTP_SIZE") {
             Some(v) => v.to_owned(),
             None => {
