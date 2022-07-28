@@ -8,10 +8,6 @@ use serde::{Deserialize, Serialize};
 use crate::eval_constants::get_totp_size_value;
 //==================================================================================================================
 
-pub const KEY_SIZE: usize = 8;
-pub const TOTP_SIZE: u32 = 6;
-pub const STEP_SIZE: u64 = 30;
-
 pub const FILE_PATH: &str = "./settings.toml";
 
 pub static KEY_MAP: Lazy<HashMap<String, String>> = Lazy::new(|| {
