@@ -421,9 +421,9 @@ dependencies = [
 
 [[package]]
 name = "axum-aws-lambda"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6eab91153907f1b91575d00d862ba49d8d8777367316e36e573644db694dcc7"
+checksum = "d3dcab8538771c0e4ca0bfe4c51554bad505271759a0c3cbd537426c555abe1e"
 dependencies = [
  "axum",
  "bytes",
@@ -2193,6 +2193,7 @@ dependencies = [
  "async_once",
  "aws-config",
  "aws-sdk-dynamodb",
+ "aws-types",
  "axum",
  "axum-aws-lambda",
  "config",
