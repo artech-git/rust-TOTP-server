@@ -5,7 +5,7 @@ use http::header::HeaderMap;
 use http::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
 use totp_rs::{Algorithm, TOTP};
 
-use crate::db::DB_AWS;
+use crate::db::DynamoDBClient;
 use crate::eval_constants::{get_step_size_value, get_totp_size_value};
 use crate::obj::KEY_MAP;
 use crate::{
@@ -15,7 +15,7 @@ use crate::{
 use qrcode_generator::QrCodeEcc;
 
 async fn get_user_key(email: &String) -> Option<String> {
-    let client = DB_AWS.get().await;
+    let client = &DynamoDBClient.to_owned();
 
     let key = "user_email".to_string();
     let user_av = AttributeValue::S(email.to_owned());
@@ -97,7 +97,7 @@ async fn discover_user(email: &String) -> Option<()> {
     let email_av = AttributeValue::S(email.to_owned());
     let key = "user_email".to_string();
 
-    let client = DB_AWS.get().await;
+    let client = &DynamoDBClient.to_owned();
 
     let table_name: String = KEY_MAP
         .get(&"auth-table".to_string())
@@ -134,7 +134,7 @@ async fn insert_user(email: &String, secret: &String) -> Option<()> {
     let email_av = AttributeValue::S(email.to_owned());
     let secret_av = AttributeValue::S(secret.to_owned());
 
-    let client = DB_AWS.get().await;
+    let client = &DynamoDBClient.to_owned();
 
     let table_name: String = KEY_MAP
         .get(&"auth-table".to_string())

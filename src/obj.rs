@@ -19,7 +19,10 @@ pub static KEY_MAP: Lazy<HashMap<String, String>> = Lazy::new(|| {
         .add_source(config::Environment::with_prefix("APP"))
         .build()
     {
-        Ok(v) => v,
+        Ok(v) => {
+            tracing::log::info!("settings.toml read");
+            v
+        }
         Err(e) => {
             tracing::log::error!("cannot open the file: {}", e);
             panic!();
