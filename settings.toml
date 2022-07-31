@@ -4,3 +4,6 @@ STEP_SIZE = "30" #define the seconds elasped before generating the new code
 auth-table = "totp-auth"
 aws-region-url = "https://dynamodb.ap-south-1.amazonaws.com/totp-auth"
 aws-region = "ap-south-1"
+
+db-access-key = "your-IAM-access-key" 
+db-secret-access-key = "your-IAM-secret-access-key"
