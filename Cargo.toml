@@ -10,8 +10,11 @@ edition = "2021"
 
 lambda_http = "0.6.0"
 axum-aws-lambda = "0.2.0"
+
 aws-sdk-dynamodb = "0.16.0"
+aws-sdk-s3control = "0.16.0"
 aws-config = "0.46.0"
+
 aws-types = {version= "0.46.0", features= ["hardcoded-credentials"]}
 tower = "0.4.13"
 
@@ -33,6 +36,9 @@ tracing-subscriber = { version = "0.3", features = ["tracing"] }
 totp-lite = "2.0.0"
 totp-rs = {version = "2.0.1", features = ["default", "qr"]}
 koibumi-base32 = "0.0.2"
+bcrypt = "0.13.0"
+rusty_paseto = "0.4.0"
+chrono = "0.4.22"
 
 regex = "1.6.0"
 http = "0.2.8"
