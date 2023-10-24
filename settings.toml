@@ -5,5 +5,12 @@ auth-table = "totp-auth"
 aws-region-url = "https://dynamodb.ap-south-1.amazonaws.com/totp-auth"
 aws-region = "ap-south-1"
 
-db-access-key = "your-IAM-access-key" 
-db-secret-access-key = "your-IAM-secret-access-key"
+db-access-key = "AKIAYYYC34PQ46V3GL44" 
+db-secret-access-key = "veTI2AD5dxfLxDlho+eICiBH31pdteIbdTr/kKTI"
+
+symmetric-token-key = "707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f"
+nonce-token = "0000000000000000000000000000000000000000000000000000000000000000"
+
+symmetric-token-totp-key = "707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f"
+nonce-totp-token = "0000000000000000000000000000000000000000000000000000000000000000"
+

@@ -1,7 +1,4 @@
-use axum::{routing::get, Router};
-
-#[macro_use]
-extern crate lazy_static; //crate required for using lazy_static! macro
+use axum::{routing::post, Router};
 
 extern crate rand;
 
@@ -16,14 +13,15 @@ use crate::auth::{authentication, otp_verification, register_user, verification}
 
 #[tokio::main]
 async fn main() {
+    
     tracing_subscriber::fmt::init();
 
     // setup the routes which will going to be passed to the respective debug assertion
     let app = Router::new()
-        .route("/signin", get(register_user))
-        .route("/login", get(verification))
-        .route("/verify", get(otp_verification))
-        .route("/authorize", get(authentication));
+        .route("/signin", post(register_user))
+        .route("/login", post(verification))
+        .route("/verify", post(otp_verification))
+        .route("/authorize", post(authentication));
 
     #[cfg(debug_assertions)] // select the following block if the --release flag is not present
     {

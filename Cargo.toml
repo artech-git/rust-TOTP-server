@@ -41,11 +41,10 @@ rusty_paseto = "0.4.0"
 chrono = "0.4.22"
 
 regex = "1.6.0"
+regress = "0.4.1"
 http = "0.2.8"
 
 rand = "0.8.5"
-
-lazy_static = "1.4.0"
 
 qrcode-generator = "4.1.6"
 
