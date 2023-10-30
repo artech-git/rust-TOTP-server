@@ -1,13 +1,14 @@
 use std::collections::HashMap;
 
 use aws_sdk_dynamodb::model::{AttributeValue, Select};
+use axum::extract::State;
 use axum::{http::StatusCode, response::IntoResponse, Json};
 use http::header::HeaderMap;
 use http::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
 use serde_json::json;
 use totp_rs::{Algorithm, TOTP};
 
-use crate::db::DynamoDBClient;
+use crate::db::{DynamoDBClient, DB_Operation};
 use crate::eval_constants::{get_step_size_value, get_totp_size_value};
 use crate::obj::{RegUser, KEY_MAP};
 use crate::operation::decrypt_token;
@@ -17,225 +18,228 @@ use crate::{
 };
 use qrcode_generator::QrCodeEcc;
 
-async fn get_user_key(email: &String, pwd: &String) -> Option<String> {
-    let client = &DynamoDBClient.to_owned();
+// async fn get_user_key(email: &String, pwd: &String) -> Option<String> {
+//     let client = &DynamoDBClient.to_owned();
 
-    let key = "user_email".to_string();
-    let user_av = AttributeValue::S(email.to_owned());
+//     let key = "user_email".to_string();
+//     let user_av = AttributeValue::S(email.to_owned());
 
-    let table_name: String = KEY_MAP
-        .get(&"auth-table".to_string())
-        .unwrap_or(&"auth-totp".to_string())
-        .to_owned();
+//     let table_name: String = KEY_MAP
+//         .get(&"auth-table".to_string())
+//         .unwrap_or(&"auth-totp".to_string())
+//         .to_owned();
 
-    match client
-        .query()
-        .table_name(table_name)
-        .key_condition_expression("#key = :value".to_string())
-        .expression_attribute_names("#key".to_string(), key)
-        .expression_attribute_values(":value".to_string(), user_av)
-        .select(Select::AllAttributes)
-        .send()
-        .await
-    {
-        Ok(resp) => {
+//     match client
+//         .query()
+//         .table_name(table_name)
+//         .key_condition_expression("#key = :value".to_string())
+//         .expression_attribute_names("#key".to_string(), key)
+//         .expression_attribute_values(":value".to_string(), user_av)
+//         .select(Select::AllAttributes)
+//         .send()
+//         .await
+//     {
+//         Ok(resp) => {
 
-            if resp.count > 0 {
-                tracing::log::info!("User entry found in the table:");
+//             if resp.count > 0 {
+//                 tracing::log::info!("User entry found in the table:");
 
-                let u = resp.items.unwrap();
+//                 let u = resp.items.unwrap();
 
-                let pwd = u[0].get("hash").unwrap().as_s().unwrap().to_owned();
+//                 let pwd = u[0].get("hash").unwrap().as_s().unwrap().to_owned();
 
-                return Some(pwd);
+//                 return Some(pwd);
 
-            } else {
-                println!("not found in the table");
-                return None;
-            }
-        }
-        Err(e) => {
-            eprintln!("error -> {}", e);
-            return None;
-        }
-    }
-}
+//             } else {
+//                 println!("not found in the table");
+//                 return None;
+//             }
+//         }
+//         Err(e) => {
+//             eprintln!("error -> {}", e);
+//             return None;
+//         }
+//     }
+// }
 
-async fn get_user_secret(email: &String) -> Option<String> {
-    let client = &DynamoDBClient.to_owned();
+// async fn get_user_secret(email: &String) -> Option<String> {
+//     let client = &DynamoDBClient.to_owned();
 
-    let key = "user_email".to_string();
-    let user_av = AttributeValue::S(email.to_owned());
+//     let key = "user_email".to_string();
+//     let user_av = AttributeValue::S(email.to_owned());
 
-    let table_name: String = KEY_MAP
-        .get(&"auth-table".to_string())
-        .unwrap_or(&"auth-totp".to_string())
-        .to_owned();
+//     let table_name: String = KEY_MAP
+//         .get(&"auth-table".to_string())
+//         .unwrap_or(&"auth-totp".to_string())
+//         .to_owned();
 
-    match client
-        .query()
-        .table_name(table_name)
-        .key_condition_expression("#key = :value".to_string())
-        .expression_attribute_names("#key".to_string(), key)
-        .expression_attribute_values(":value".to_string(), user_av)
-        .select(Select::AllAttributes)
-        .send()
-        .await
-    {
-        Ok(resp) => {
-            if resp.count > 0 {
-                tracing::log::info!("User entry found in the table:");
+//     match client
+//         .query()
+//         .table_name(table_name)
+//         .key_condition_expression("#key = :value".to_string())
+//         .expression_attribute_names("#key".to_string(), key)
+//         .expression_attribute_values(":value".to_string(), user_av)
+//         .select(Select::AllAttributes)
+//         .send()
+//         .await
+//     {
+//         Ok(resp) => {
+//             if resp.count > 0 {
+//                 tracing::log::info!("User entry found in the table:");
 
-                let u = resp.items.unwrap();
+//                 let u = resp.items.unwrap();
 
-                let ans = u[0].get("secret").unwrap().as_s().unwrap().to_owned();
+//                 let ans = u[0].get("secret").unwrap().as_s().unwrap().to_owned();
 
-                return Some(ans);
+//                 return Some(ans);
 
-            } else {
-                println!("not found in the table");
-                return None;
-            }
-        }
-        Err(e) => {
-            eprintln!("error -> {}", e);
-            return None;
-        }
-    }
-}
+//             } else {
+//                 println!("not found in the table");
+//                 return None;
+//             }
+//         }
+//         Err(e) => {
+//             eprintln!("error -> {}", e);
+//             return None;
+//         }
+//     }
+// }
 
-async fn get_user_name(email: &String) -> Option<String> {
-    let client = &DynamoDBClient.to_owned();
+// async fn get_user_name(db_instance: impl DB_Operation, email: &String) -> Option<String> {
+//     let client = &DynamoDBClient.to_owned();
 
-    let key = "user_email".to_string();
-    let user_av = AttributeValue::S(email.to_owned());
+//     let key = "user_email".to_string();
+//     let user_av = AttributeValue::S(email.to_owned());
 
-    let table_name: String = KEY_MAP
-        .get(&"auth-table".to_string())
-        .unwrap_or(&"auth-totp".to_string())
-        .to_owned();
+//     let table_name: String = KEY_MAP
+//         .get(&"auth-table".to_string())
+//         .unwrap_or(&"auth-totp".to_string())
+//         .to_owned();
 
-    match client
-        .query()
-        .table_name(table_name)
-        .key_condition_expression("#key = :value".to_string())
-        .expression_attribute_names("#key".to_string(), key)
-        .expression_attribute_values(":value".to_string(), user_av)
-        .select(Select::AllAttributes)
-        .send()
-        .await
-    {
-        Ok(resp) => {
-            if resp.count > 0 {
-                tracing::log::info!("User entry found in the table:");
+//     match client
+//         .query()
+//         .table_name(table_name)
+//         .key_condition_expression("#key = :value".to_string())
+//         .expression_attribute_names("#key".to_string(), key)
+//         .expression_attribute_values(":value".to_string(), user_av)
+//         .select(Select::AllAttributes)
+//         .send()
+//         .await
+//     {
+//         Ok(resp) => {
+//             if resp.count > 0 {
+//                 tracing::log::info!("User entry found in the table:");
 
-                let u = resp.items.unwrap();
+//                 let u = resp.items.unwrap();
 
-                let ans = u[0].get("user_name").unwrap().as_s().unwrap().to_owned();
+//                 let ans = u[0].get("user_name").unwrap().as_s().unwrap().to_owned();
 
-                if ans.is_empty() {
-                    return None;
-                }
+//                 if ans.is_empty() {
+//                     return None;
+//                 }
 
-                return Some(ans);
+//                 return Some(ans);
 
-            } else {
-                tracing::log::warn!("not found in the table");
-                return None;
-            }
-        }
-        Err(e) => {
-            tracing::log::error!("error -> {}", e);
-            return None;
-        }
-    }
-}
+//             } else {
+//                 tracing::log::warn!("not found in the table");
+//                 return None;
+//             }
+//         }
+//         Err(e) => {
+//             tracing::log::error!("error -> {}", e);
+//             return None;
+//         }
+//     }
+// }
 
-async fn discover_user(email: &String, user: &String) -> Option<()> {
+// async fn discover_user(db_instance: impl DB_Operation, email: &String, user: &String) -> Option<()> {
 
-    let email_av = AttributeValue::S(email.to_owned());
-    // let user_av2 = AttributeValue::S(user.to_owned());
-    let key = "user_email".to_string();
-    // let key2 = "user_name".to_string();
-    let client = &DynamoDBClient.to_owned();
+//     let email_av = AttributeValue::S(email.to_owned());
+//     // let user_av2 = AttributeValue::S(user.to_owned());
+//     let key = "user_email".to_string();
+//     // let key2 = "user_name".to_string();
+//     let client = &DynamoDBClient.to_owned();
 
-    let table_name: String = KEY_MAP
-        .get(&"auth-table".to_string())
-        .unwrap_or(&"auth-totp".to_string())
-        .to_owned();
+//     let table_name: String = KEY_MAP
+//         .get(&"auth-table".to_string())
+//         .unwrap_or(&"auth-totp".to_string())
+//         .to_owned();
 
-    match client
-        .query()
-        .table_name(table_name)
-        .key_condition_expression("#key = :value".to_string())
-        .expression_attribute_names("#key".to_string(), key)
-        .expression_attribute_values(":value".to_string(), email_av)
-        .select(Select::AllAttributes)
-        .send()
-        .await
-    {
-        Ok(resp) => {
-            if resp.count > 0 {
-                tracing::log::info!("User entry is present in the table");
-                return Some(());
-            } else {
-                tracing::log::error!("User entry not found");
-                return None;
-            }
-        }
-        Err(e) => {
-            tracing::log::info!("error querying the user record: {e}");
-            return None;
-        }
-    }
-}
+//     match client
+//         .query()
+//         .table_name(table_name)
+//         .key_condition_expression("#key = :value".to_string())
+//         .expression_attribute_names("#key".to_string(), key)
+//         .expression_attribute_values(":value".to_string(), email_av)
+//         .select(Select::AllAttributes)
+//         .send()
+//         .await
+//     {
+//         Ok(resp) => {
+//             if resp.count > 0 {
+//                 tracing::log::info!("User entry is present in the table");
+//                 return Some(());
+//             } else {
+//                 tracing::log::error!("User entry not found");
+//                 return None;
+//             }
+//         }
+//         Err(e) => {
+//             tracing::log::info!("error querying the user record: {e}");
+//             return None;
+//         }
+//     }
+// }
 
-async fn insert_user(email: &String, secret: &String, username: &String, h: &String) -> Option<()> {
+// async fn insert_user(db_instance: impl DB_Operation, email: &String, secret: &String, username: &String, h: &String) -> Option<()> {
 
-    let email_av = AttributeValue::S(email.to_owned());
-    let secret_av = AttributeValue::S(secret.to_owned());
-    let username_av = AttributeValue::S(username.to_owned());
-    let hash = AttributeValue::S(h.to_owned());
+//     let email_av = AttributeValue::S(email.to_owned());
+//     let secret_av = AttributeValue::S(secret.to_owned());
+//     let username_av = AttributeValue::S(username.to_owned());
+//     let hash = AttributeValue::S(h.to_owned());
 
-    let client = &DynamoDBClient.to_owned();
+//     let client = &db_instance.to_owned();
 
-    let table_name: String = KEY_MAP
-        .get(&"auth-table".to_string())
-        .unwrap_or(&"auth-totp".to_string())
-        .to_owned();
+//     let table_name: String = KEY_MAP
+//         .get(&"auth-table".to_string())
+//         .unwrap_or(&"auth-totp".to_string())
+//         .to_owned();
 
-    let request = client
-        .put_item()
-        .table_name(table_name)
-        .item("user_email", email_av)
-        .item("secret", secret_av)
-        .item("user_name", username_av)
-        .item("hash", hash);
+//     let request = client
+//         .put_item()
+//         .table_name(table_name)
+//         .item("user_email", email_av)
+//         .item("secret", secret_av)
+//         .item("user_name", username_av)
+//         .item("hash", hash);
 
-    match request.send().await {
-        Ok(output) => {
-            if output.attributes.is_none() {
-                tracing::log::info!(" Insertion succesfull");
-                return Some(());
-            } else {
-                tracing::log::warn!(" Value already present");
-                return None;
-            }
-        }
-        Err(_) => {
-            tracing::log::error!(" Insertion  invalid");
-            return None;
-        }
-    };
-}
+//     match request.send().await {
+//         Ok(output) => {
+//             if output.attributes.is_none() {
+//                 tracing::log::info!(" Insertion succesfull");
+//                 return Some(());
+//             } else {
+//                 tracing::log::warn!(" Value already present");
+//                 return None;
+//             }
+//         }
+//         Err(_) => {
+//             tracing::log::error!(" Insertion  invalid");
+//             return None;
+//         }
+//     };
+// }
+
 
 /*
-The function declared below is the route for performing the operation regarding registering the user
-to the with the fields
+    The function declared below is the route for performing the operation regarding registering the user
+    to the with the fields.
 */
 
 //  This route accepts JSON of type payload to be decoded as a parameter
-pub async fn register_user(Json(payload): Json<RegUser>) -> impl IntoResponse {
+pub async fn register_user(
+    State(db_instance): State<impl DB_Operation>, 
+    Json(payload): Json<RegUser>) -> impl IntoResponse {
 
     tracing::log::info!(" Registration of token");
     let mut hm = HeaderMap::new(); //create a new header map for generating the respective headers
@@ -249,7 +253,7 @@ pub async fn register_user(Json(payload): Json<RegUser>) -> impl IntoResponse {
         //acquire the secret the key for the token registeration and insertion in database
         let secret_key = generate_secret();
 
-        let user_presence = discover_user(&payload.email, &payload.username).await;
+        let user_presence = db_instance.discover_user(&payload.email, &payload.username);
         //check wheather the user is already present in database or not and return a option type corresponding to it
 
         if user_presence.is_some() {
@@ -271,7 +275,7 @@ pub async fn register_user(Json(payload): Json<RegUser>) -> impl IntoResponse {
         let hash = crate::operation::get_hash(&payload.passwd);
         //compute the hashing based upon the passwd field
         let db_state_update =
-            insert_user(&payload.email, &secret_key, &payload.username, &hash).await;
+            db_instance.insert_user( &payload.email, &secret_key, &payload.username, &hash);
         //perform the insertion in the database using the credentials passed
 
         match db_state_update {
@@ -341,7 +345,9 @@ pub async fn register_user(Json(payload): Json<RegUser>) -> impl IntoResponse {
     );
 }
 
-pub async fn authentication(Json(payload): Json<User>) -> impl IntoResponse {
+pub async fn authentication(
+    State(db_instance): State<impl DB_Operation>, 
+    Json(payload): Json<User>) -> impl IntoResponse {
     let mut hm = HeaderMap::new();
     hm.insert(CONTENT_TYPE, "application/json".parse().unwrap());
 
@@ -366,7 +372,7 @@ pub async fn authentication(Json(payload): Json<User>) -> impl IntoResponse {
                 "user": hm1["user"].to_owned(),
                 "session_id": hm1["session uid"].to_owned(),
                 "date": chrono::Utc::now().to_string(),
-                "username": get_user_name(&payload.email.to_owned()).await.unwrap()
+                "username": db_instance.get_user_name(&payload.email.to_owned()).unwrap()
             });
 
             return (hm, Json(body_content));
@@ -384,13 +390,15 @@ pub async fn authentication(Json(payload): Json<User>) -> impl IntoResponse {
     );
 }
 
-pub async fn verification(Json(payload): Json<VerifyUser>) -> impl IntoResponse {
+pub async fn verification(
+    State(db_instance): State<impl DB_Operation>, 
+    Json(payload): Json<VerifyUser>) -> impl IntoResponse {
     tracing::log::info!("verfication of user");
 
     let error_json = Json(json!({"Invalid user": &payload.email}));
 
     if payload.is_valid() {
-        match get_user_key(&payload.email, &payload.passwd).await {
+        match db_instance.get_user_key(&payload.email, &payload.passwd) {
             Some(hashed_passwd) => {
                 /*
                 extract the hash of the passwd against the user
@@ -440,7 +448,9 @@ pub async fn verification(Json(payload): Json<VerifyUser>) -> impl IntoResponse 
     return (StatusCode::BAD_REQUEST, error_json);
 }
 
-pub async fn otp_verification(Json(urlValue): Json<HashMap<String, String>>) -> impl IntoResponse {
+pub async fn otp_verification(
+    State(db_instance): State<impl DB_Operation>, 
+    Json(urlValue): Json<HashMap<String, String>>) -> impl IntoResponse {
 
     let mut hm = HeaderMap::new(); //create a new header map for generating the respective headers
     hm.insert(CONTENT_TYPE, "application/json".parse().unwrap()); //set a default header type
@@ -473,7 +483,7 @@ pub async fn otp_verification(Json(urlValue): Json<HashMap<String, String>>) -> 
 
         }
         
-        let secret = get_user_secret(&user_email).await.unwrap();
+        let secret = db_instance.get_user_secret(&user_email).unwrap();
         let server_token = match get_secret(&secret) {
             Ok(token) => token,
             Err(_) => {
@@ -498,7 +508,7 @@ pub async fn otp_verification(Json(urlValue): Json<HashMap<String, String>>) -> 
                 "user": cred_map["email"].to_owned(),
                 "session uid": cred_map["session uid"].to_owned(),
                 "utc": chrono::Utc::now().to_string(),
-                "username": get_user_name(&user_email.to_owned()).await.unwrap()
+                "username": db_instance.get_user_name(&user_email.to_owned()).unwrap()
             }).to_string();
 
             let tok = crate::operation::generate_token(&body_content, encrypt_key, nonce_key).unwrap();
