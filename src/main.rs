@@ -1,29 +1,30 @@
-use axum::{routing::get, Router};
-
-#[macro_use]
-extern crate lazy_static; //crate required for using lazy_static! macro
+use axum::{routing::get, Extension, Router};
 
 extern crate rand;
 
-mod auth;
 mod db;
 mod eval_constants;
+mod handles;
 mod obj;
 mod operation;
 mod test;
 
-use crate::auth::{authentication, otp_verification, register_user, verification};
+use crate::handles::{authentication, otp_verification, register_user, verification};
 
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
+
+    let conn_str = "postgres://postgres.qyrhhghewyfcwffblxxr:FTPkGGQaQB2AuxOr@aws-0-eu-central-1.pooler.supabase.com:5432/postgres";
+    let pooled_conn = sqlx::pool::Pool::connect(conn_str).await.unwrap();
 
     // setup the routes which will going to be passed to the respective debug assertion
     let app = Router::new()
         .route("/signin", get(register_user))
         .route("/login", get(verification))
         .route("/verify", get(otp_verification))
-        .route("/authorize", get(authentication));
+        .route("/authorize", get(authentication))
+        .extension(Extension(pooled_conn));
 
     #[cfg(debug_assertions)] // select the following block if the --release flag is not present
     {
@@ -34,7 +35,6 @@ async fn main() {
             .unwrap();
     }
 
-    // If we compile in release mode, use the Lambda Runtime
     #[cfg(not(debug_assertions))] // select the following code block on --release builds
     {
         // To run with AWS Lambda runtime, wrap in our `LambdaLayer`

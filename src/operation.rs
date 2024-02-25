@@ -65,20 +65,17 @@ pub fn get_hash(client_secret: &String) -> String {
     hash
 }
 
-pub fn generate_token(data: &String, encrypt_key: &String, nonce_key: &String) -> Result<String, ()> {
+pub fn generate_token(
+    data: &String,
+    encrypt_key: &String,
+    nonce_key: &String,
+) -> Result<String, ()> {
     use rusty_paseto::core::*;
 
-    let key = PasetoSymmetricKey::<V4, Local>::from(
-        Key::<32>::try_from(
-            encrypt_key.as_str(),
-        )
-        .unwrap(),
-    );
+    let key =
+        PasetoSymmetricKey::<V4, Local>::from(Key::<32>::try_from(encrypt_key.as_str()).unwrap());
 
-    let nonce = Key::<32>::try_from(
-        nonce_key.as_str(),
-    )
-    .unwrap();
+    let nonce = Key::<32>::try_from(nonce_key.as_str()).unwrap();
     // let nonce = Key::<32>::try_new_random().unwrap();
     let paseto_nonce = PasetoNonce::<V4, Local>::from(&nonce);
 
@@ -99,12 +96,11 @@ pub fn generate_token(data: &String, encrypt_key: &String, nonce_key: &String) -
 }
 
 pub fn validate_token(prev_utc: &str, mins: u8) -> bool {
-
     let prev_time = chrono::DateTime::from_str(prev_utc).unwrap();
 
     let duration = chrono::Utc::now() - prev_time;
-    
-    let time = 60 * (mins as i64); 
+
+    let time = 60 * (mins as i64);
 
     if duration < chrono::Duration::seconds(time) {
         return true;
@@ -113,9 +109,7 @@ pub fn validate_token(prev_utc: &str, mins: u8) -> bool {
 }
 
 pub fn decrypt_token(token: &String, encrypt_key: &String) -> Result<String, ()> {
-    let get_key = match rusty_paseto::prelude::Key::<32>::try_from(
-        encrypt_key.as_str()
-    ) {
+    let get_key = match rusty_paseto::prelude::Key::<32>::try_from(encrypt_key.as_str()) {
         Ok(v) => v,
         Err(e) => {
             tracing::log::error!(" key generation error : {e}");
@@ -133,7 +127,7 @@ pub fn decrypt_token(token: &String, encrypt_key: &String) -> Result<String, ()>
         rusty_paseto::prelude::Local,
     >::try_decrypt(token, &key, None, None)
     {
-        Ok(v) => v, 
+        Ok(v) => v,
         Err(e) => {
             tracing::log::error!(" decryption error: {e} ");
             return Err(());

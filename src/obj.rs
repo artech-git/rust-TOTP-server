@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use config::Config;
-use once_cell::sync::Lazy;
+use once_cell::sync::{Lazy, OnceCell};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
@@ -59,11 +59,13 @@ impl VerifyUser {
         if self.token.chars().count() != (get_totp_size_value() as usize) {
             return false;
         }
-        lazy_static! {//todo evaluate the email constrain too
-            static ref RE: Regex = Regex::new(r"(^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$)").unwrap();
-        }
+        let mut regex = OnceCell::new();
+        //todo evaluate the email constrain too
+        regex.get_or_init(
+            Regex::new(r"(^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$)").unwrap(),
+        );
 
-        RE.is_match(self.email.as_str())
+        regex.is_match(self.email.as_str())
     }
 }
 //==================================================================================================================
@@ -78,11 +80,14 @@ impl User {
             return false;
         }
 
-        lazy_static! {//todo evaluate the email constrain too
-            static ref RE: Regex = Regex::new(r"(^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$)").unwrap();
-        }
+        let mut regex = OnceCell::new();
 
-        let res = (*RE).is_match(&self.email);
+        //todo evaluate the email constrain too
+        regex.get_or_init(
+            Regex::new(r"(^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$)").unwrap(),
+        );
+
+        let res = regex.is_match(&self.email);
         println!("called validation on email: {res}");
         return res;
     }

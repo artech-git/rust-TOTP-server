@@ -5,6 +5,8 @@ use once_cell::sync::Lazy;
 
 use crate::obj::KEY_MAP;
 
+// pub static DBClient: Lazy<Client>
+
 pub static DynamoDBClient: Lazy<Client> = Lazy::new(|| {
     let region = KEY_MAP
         .get(&"aws-region".to_string())
