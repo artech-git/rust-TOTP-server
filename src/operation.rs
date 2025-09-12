@@ -1,20 +1,14 @@
-use std::{str::FromStr, time::SystemTime};
-use totp_lite::{totp_custom, Sha1, DEFAULT_STEP};
-
+use crate::error::{Error, Result};
 use rand::distributions::Alphanumeric;
 use rand::Rng;
-
-use crate::{
-    eval_constants::{get_key_size_value, get_totp_size_value},
-    obj::KEY_MAP,
-};
+use std::time::SystemTime;
+use totp_lite::{totp_custom, Sha1, DEFAULT_STEP};
 
 //return a random set of string which we can use to create a QR code
-pub fn generate_secret() -> String {
-    // const STR_LEN: usize = 10;
-    let rand_str = rand::thread_rng()
+pub fn generate_secret(key_size: usize) -> String {
+    let rand_str: String = rand::thread_rng()
         .sample_iter(&Alphanumeric)
-        .take(get_key_size_value())
+        .take(key_size)
         .map(char::from)
         .collect();
 
@@ -22,18 +16,18 @@ pub fn generate_secret() -> String {
 }
 
 //create the on time based OTP out of the given secret
-pub fn get_secret(input: &String) -> Result<String, ()> {
+pub fn get_secret(input: &str, key_size: usize, totp_size: u32) -> Result<String> {
     let length = input.trim().chars().count();
 
-    if length != (get_key_size_value()) {
+    if length != key_size {
         tracing::log::error!("Invalid TOTP secret key size ");
-        return Err(());
+        return Err(Error::Paseto); // Using Paseto error for now, will create a better error later
     }
 
     // The number of seconds since the Unix Epoch, used to calcuate a TOTP secret.
     let seconds: u64 = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
+        .map_err(|_| Error::Paseto)? // Using Paseto error for now
         .as_secs();
 
     let base = input.as_bytes().to_vec();
@@ -43,102 +37,68 @@ pub fn get_secret(input: &String) -> Result<String, ()> {
         // Calculate a new code every 30 seconds.
         DEFAULT_STEP,
         // Calculate a 6 digit code.
-        get_totp_size_value(),
+        totp_size,
         // Convert the secret into bytes using base32::decode().
         &base,
         // Seconds since the Unix Epoch.
         seconds,
     );
 
-    return Ok(token);
+    Ok(token)
 }
 
-pub fn get_hash(client_secret: &String) -> String {
-    let hash = match bcrypt::hash(client_secret.as_ref() as &str, 5) {
-        Ok(f) => f,
-        Err(e) => {
-            tracing::log::error!("error in creating a hash of client secret: {}", e);
-            panic!();
-        }
-    };
-
-    hash
+pub fn get_hash(client_secret: &str) -> Result<String> {
+    let hash = bcrypt::hash(client_secret, 5)?;
+    Ok(hash)
 }
 
-pub fn generate_token(data: &String, encrypt_key: &String, nonce_key: &String) -> Result<String, ()> {
+pub fn generate_token(data: &str, encrypt_key: &str, nonce_key: &str) -> Result<String> {
     use rusty_paseto::core::*;
 
     let key = PasetoSymmetricKey::<V4, Local>::from(
-        Key::<32>::try_from(
-            encrypt_key.as_str(),
-        )
-        .unwrap(),
+        Key::<32>::try_from(encrypt_key).map_err(|_| Error::Paseto)?,
     );
 
-    let nonce = Key::<32>::try_from(
-        nonce_key.as_str(),
-    )
-    .unwrap();
-    // let nonce = Key::<32>::try_new_random().unwrap();
+    let nonce = Key::<32>::try_from(nonce_key).map_err(|_| Error::Paseto)?;
     let paseto_nonce = PasetoNonce::<V4, Local>::from(&nonce);
 
-    let payload = Payload::from(data.as_str());
+    let payload = Payload::from(data);
 
-    let token = match Paseto::<V4, Local>::builder()
+    let token = Paseto::<V4, Local>::builder()
         .set_payload(payload)
         .try_encrypt(&key, &paseto_nonce)
-    {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::log::error!(" generate token error: {e}");
-            return Err(());
-        }
-    };
+        .map_err(|_| Error::Paseto)?;
 
-    return Ok(token.to_string());
+    Ok(token.to_string())
 }
 
-pub fn validate_token(prev_utc: &str, mins: u8) -> bool {
+pub fn validate_token(prev_utc: &str, mins: u8) -> Result<bool> {
+    let prev_time = chrono::DateTime::parse_from_rfc3339(prev_utc)?;
 
-    let prev_time = chrono::DateTime::from_str(prev_utc).unwrap();
+    let duration = chrono::Utc::now().signed_duration_since(prev_time);
 
-    let duration = chrono::Utc::now() - prev_time;
-    
-    let time = 60 * (mins as i64); 
+    let time = 60 * (mins as i64);
 
     if duration < chrono::Duration::seconds(time) {
-        return true;
+        return Ok(true);
     }
-    return false;
+    Ok(false)
 }
 
-pub fn decrypt_token(token: &String, encrypt_key: &String) -> Result<String, ()> {
-    let get_key = match rusty_paseto::prelude::Key::<32>::try_from(
-        encrypt_key.as_str()
-    ) {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::log::error!(" key generation error : {e}");
-            return Err(());
-        }
-    };
+pub fn decrypt_token(token: &str, encrypt_key: &str) -> Result<String> {
+    let get_key =
+        rusty_paseto::prelude::Key::<32>::try_from(encrypt_key).map_err(|_| Error::Paseto)?;
 
     let key = rusty_paseto::prelude::PasetoSymmetricKey::<
         rusty_paseto::prelude::V4,
         rusty_paseto::prelude::Local,
     >::from(get_key);
 
-    let val = match rusty_paseto::prelude::Paseto::<
+    let val = rusty_paseto::prelude::Paseto::<
         rusty_paseto::prelude::V4,
         rusty_paseto::prelude::Local,
     >::try_decrypt(token, &key, None, None)
-    {
-        Ok(v) => v, 
-        Err(e) => {
-            tracing::log::error!(" decryption error: {e} ");
-            return Err(());
-        }
-    };
+    .map_err(|_| Error::Paseto)?;
 
-    return Ok(val);
+    Ok(val)
 }
