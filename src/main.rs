@@ -1,34 +1,40 @@
 use axum::{routing::get, Router};
-
-#[macro_use]
-extern crate lazy_static; //crate required for using lazy_static! macro
-
-extern crate rand;
+use std::sync::Arc;
 
 mod auth;
+mod config;
 mod db;
-mod eval_constants;
+mod error;
 mod obj;
 mod operation;
 mod test;
 
-use crate::auth::{authentication, otp_verification, register_user, verification};
+use crate::{
+    auth::{register_user, verification},
+    config::Config,
+    db::Db,
+};
 
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
 
+    let config = Config::from_env().expect("failed to load config");
+    let db = Db::new(&config).await.expect("failed to connect to db");
+
+    let shared_state = Arc::new(db);
+    let config_state = Arc::new(config);
+
     // setup the routes which will going to be passed to the respective debug assertion
     let app = Router::new()
         .route("/signin", get(register_user))
         .route("/login", get(verification))
-        .route("/verify", get(otp_verification))
-        .route("/authorize", get(authentication));
+        .layer(axum::extract::Extension(shared_state))
+        .layer(axum::extract::Extension(config_state));
 
     #[cfg(debug_assertions)] // select the following block if the --release flag is not present
     {
         axum::Server::bind(&"0.0.0.0:3000".parse().unwrap())
-            .http2_enable_connect_protocol() //enable http2 connection procedure for the axum server
             .serve(app.into_make_service()) //serve our application on this route
             .await
             .unwrap();

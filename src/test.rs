@@ -1,19 +1,17 @@
 #[cfg(test)]
 mod tests {
     use crate::{
-        obj::{VerifyUser, KEY_MAP},
+        obj::VerifyUser,
         operation::{generate_secret, get_secret},
     };
 
+    const KEY_SIZE: usize = 10;
+    const TOTP_SIZE: u32 = 6;
+
     #[test]
     fn totp_key_attribute() {
-        let rand_secret = generate_secret();
-        let key_size = KEY_MAP
-            .get(&"KEY_SIZE".to_string())
-            .expect("key not found")
-            .parse::<usize>()
-            .unwrap();
-        assert_eq!(rand_secret.chars().count(), key_size);
+        let rand_secret = generate_secret(KEY_SIZE);
+        assert_eq!(rand_secret.chars().count(), KEY_SIZE);
         for ch in rand_secret.chars() {
             assert!(ch.is_alphanumeric());
         }
@@ -74,32 +72,28 @@ mod tests {
         ];
 
         for v in verify_user.iter() {
-            assert_eq!(v.0.is_valid(), v.1);
+            assert_eq!(v.0.is_valid(TOTP_SIZE), v.1);
         }
     }
 
-    // #[test]
-    // #[should_panic(expected = "invalid secret based totp generation call")]
-    // fn validate_totp() {
-    //     let secret = generate_secret();
-    //     let totp = get_secret(&secret).unwrap();
-    //     let totp_vec = vec![
-    //         ("aaabbbccc".to_string(), true),
-    //         ("aaa$bbccc".to_string(), false),
-    //         ("aaa12bccc".to_string(), true),
-    //         ("aaa12#ccc".to_string(), false),
-    //         ("aaabbbcccd".to_string(), false),
-    //         ("aaabbbccc*1".to_string(), false),
-    //         ("12345678".to_string(), true),
-    //         ("123456789".to_string(), false),
-    //         ("".to_string(), false),
-    //     ];
+    #[test]
+    fn validate_totp() {
+        let totp_vec = vec![
+            ("aaabbbccc1".to_string(), true),
+            ("aaabbbccc".to_string(), false),
+            ("aaa$bbccc".to_string(), false),
+            ("aaa12bccc1".to_string(), true),
+            ("aaa12#ccc".to_string(), false),
+            ("aaabbbcccd".to_string(), true),
+            ("aaabbbccc*1".to_string(), false),
+            ("1234567890".to_string(), true),
+            ("123456789".to_string(), false),
+            ("".to_string(), false),
+        ];
 
-    //     for I in totp_vec.iter() {
-    //         let totp_sec = get_secret(&(I.0));
-    //         if totp_sec.is_ok() {
-    //             let _ = totp_sec.unwrap();
-    //         }
-    //     }
-    // }
+        for i in totp_vec.iter() {
+            let totp_sec = get_secret(&i.0, KEY_SIZE, TOTP_SIZE);
+            assert_eq!(totp_sec.is_ok(), i.1);
+        }
+    }
 }
