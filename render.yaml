@@ -1,0 +1,39 @@
+# Render Blueprint — free-tier compute for the TOTP API.
+# Docs: https://render.com/docs/blueprint-spec
+#
+# All persistent data lives in Supabase Postgres; this service is stateless and
+# applies its embedded migrations on startup. Secrets are marked `sync: false`
+# so they are set in the Render dashboard, never committed. Render injects PORT
+# automatically and the server honors it.
+#
+# Free web services spin down after ~15 min idle and cold-start on the next
+# request — fine for a 2FA endpoint backed by external Postgres.
+services:
+  - type: web
+    name: totp-server
+    runtime: docker
+    plan: free
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      # Supabase Session pooler URI (port 5432, NOT the 6543 transaction pooler)
+      # with ?sslmode=require. Paste it in the dashboard.
+      - key: DATABASE_URL
+        sync: false
+      # Both generated with `cargo run -- keygen` (64 hex chars each). Keep them
+      # stable — rotating invalidates stored secrets and live sessions.
+      - key: TOTP_SECURITY__SECRET_ENCRYPTION_KEY
+        sync: false
+      - key: TOTP_SECURITY__PASETO_KEY
+        sync: false
+      # Render terminates TLS and forwards the client IP via X-Forwarded-For.
+      - key: TOTP_SERVER__TRUST_PROXY
+        value: "true"
+      # JSON array of origins allowed to call the API cross-origin, e.g. the
+      # Netlify UI: ["https://your-ui.netlify.app"]. Set in the dashboard.
+      - key: TOTP_SERVER__CORS_ALLOWED_ORIGINS
+        sync: false
+      - key: RUST_LOG
+        value: info,sqlx=warn

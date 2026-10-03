@@ -1,0 +1,48 @@
+# Copy to settings.toml and fill in the keys (generate them with `totp-server keygen`).
+# Every value here is optional; the built-in defaults are shown.
+# Any field can also be set via environment variable, e.g.:
+#   TOTP_SERVER__PORT=8080
+#   TOTP_SECURITY__PASETO_KEY=<64 hex chars>
+
+[server]
+host = "0.0.0.0"
+port = 3000
+# Trust X-Forwarded-For for client IPs (enable only behind a proxy you control).
+trust_proxy = false
+# CORS origins for a separately-hosted UI. [] = same-origin only; ["*"] = any.
+cors_allowed_origins = []
+
+[database]
+# Postgres connection string. Local dev (docker compose / `supabase start`):
+url = "postgres://postgres:postgres@127.0.0.1:54322/postgres"
+# Supabase: use the SESSION pooler URI (port 5432), e.g.
+#   "postgres://postgres.<ref>:<pw>@aws-0-<region>.pooler.supabase.com:5432/postgres?sslmode=require"
+# Can also be supplied via the DATABASE_URL environment variable.
+max_connections = 5
+connect_timeout_secs = 10
+# schema = "public"      # optional: isolate into a specific Postgres schema
+
+[totp]
+issuer = "TOTP Server"  # shown in the authenticator app
+digits = 6              # 6–8
+step = 30               # seconds per code
+skew = 1                # accepted drift, in steps, on each side of "now"
+
+[security]
+# REQUIRED for production. Generate with `totp-server keygen`.
+# secret_encryption_key = "..."   # 64 hex chars — encrypts TOTP secrets at rest
+# paseto_key            = "..."   # 64 hex chars — signs session tokens
+session_ttl_secs = 3600
+recovery_code_count = 10
+
+[security.argon2]
+memory_kib = 19456     # OWASP interactive profile
+iterations = 2
+parallelism = 1
+
+[rate_limit]
+login_max_failures = 5
+login_window_secs = 300
+lockout_secs = 900
+enroll_max_per_window = 20
+enroll_window_secs = 3600

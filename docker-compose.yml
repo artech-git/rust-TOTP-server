@@ -1,0 +1,28 @@
+# Local Postgres for development and the integration tests, on the same port
+# and credentials as `supabase start` so the built-in defaults work with no
+# configuration. (This is only for local use — production Postgres is Supabase.)
+#
+#   docker compose up -d
+#   cargo run                       # uses the default URL (port 54322)
+#   cargo test                      # set TEST_DATABASE_URL (see .env.example)
+#   docker compose down             # keep data   |   down -v to wipe it
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: totp-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    ports:
+      - "54322:5432"
+    volumes:
+      - totp_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  totp_pgdata:

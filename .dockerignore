@@ -1,0 +1,11 @@
+target
+data
+.git
+.github
+*.db
+*.db-wal
+*.db-shm
+settings.toml
+.env
+assets
+README.md

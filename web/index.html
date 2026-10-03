@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>TOTP Server</title>
+<style>
+  :root {
+    --bg: #0b0f17; --panel: #131a26; --panel-2: #0f1522; --border: #243044;
+    --text: #e7ecf3; --muted: #93a1b5; --accent: #5b9cff; --accent-ink: #06142e;
+    --ok: #46c08a; --err: #ff6b6b; --warn: #f2b94b; --radius: 14px;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --bg: #f4f6fb; --panel: #ffffff; --panel-2: #f0f3f9; --border: #d9e0ee;
+      --text: #15202e; --muted: #5a6b82; --accent: #2f6bff; --accent-ink: #ffffff;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text); font-family: var(--sans);
+    line-height: 1.5; -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 32px 16px 80px; }
+  header { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+  header .logo {
+    width: 40px; height: 40px; border-radius: 11px; display: grid; place-items: center;
+    background: linear-gradient(135deg, var(--accent), #8a5bff); color: #fff; flex: none;
+  }
+  h1 { font-size: 1.4rem; margin: 0; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); font-size: 0.9rem; margin: 0 0 24px; }
+  .tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 18px; }
+  .tab {
+    border: 1px solid var(--border); background: var(--panel-2); color: var(--muted);
+    padding: 8px 14px; border-radius: 999px; cursor: pointer; font-size: 0.88rem;
+    font-weight: 600; transition: all .15s;
+  }
+  .tab[aria-selected="true"] { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 22px; margin-bottom: 18px;
+  }
+  .card h2 { margin: 0 0 4px; font-size: 1.05rem; }
+  .card p.hint { margin: 0 0 16px; color: var(--muted); font-size: 0.85rem; }
+  label { display: block; font-size: 0.8rem; font-weight: 600; color: var(--muted); margin: 0 0 6px; }
+  input {
+    width: 100%; padding: 11px 13px; border-radius: 10px; border: 1px solid var(--border);
+    background: var(--panel-2); color: var(--text); font-size: 0.95rem; font-family: var(--sans);
+    margin-bottom: 14px;
+  }
+  input:focus { outline: 2px solid var(--accent); outline-offset: 0; border-color: transparent; }
+  input.code { font-family: var(--mono); letter-spacing: 0.18em; }
+  button.go {
+    width: 100%; padding: 12px; border: none; border-radius: 10px; cursor: pointer;
+    background: var(--accent); color: var(--accent-ink); font-weight: 700; font-size: 0.95rem;
+  }
+  button.go:disabled { opacity: .5; cursor: progress; }
+  button.go.ghost { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; }
+  .row > * { flex: 1; min-width: 140px; }
+  .qr { display: grid; place-items: center; background: #fff; padding: 16px; border-radius: 12px; margin: 4px 0 14px; }
+  .qr svg { width: 220px; height: 220px; }
+  .kv { font-family: var(--mono); font-size: 0.82rem; word-break: break-all; background: var(--panel-2);
+        border: 1px solid var(--border); border-radius: 8px; padding: 10px; margin-bottom: 12px; }
+  .codes { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 10px 0; }
+  .codes code { font-family: var(--mono); background: var(--panel-2); border: 1px solid var(--border);
+                border-radius: 8px; padding: 9px; text-align: center; letter-spacing: 0.05em; }
+  .notice { font-size: 0.82rem; padding: 10px 12px; border-radius: 8px; margin-bottom: 12px; }
+  .notice.warn { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn);
+                 border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent); }
+  #out { white-space: pre-wrap; font-family: var(--mono); font-size: 0.82rem; }
+  .out-ok { color: var(--ok); } .out-err { color: var(--err); }
+  .toast {
+    position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%) translateY(20px);
+    background: var(--panel); border: 1px solid var(--border); color: var(--text);
+    padding: 11px 18px; border-radius: 10px; font-size: 0.88rem; opacity: 0;
+    transition: all .25s; pointer-events: none; box-shadow: 0 10px 30px rgba(0,0,0,.3);
+  }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  details { margin-top: 20px; }
+  summary { cursor: pointer; color: var(--muted); font-size: 0.85rem; }
+  .settings { margin-top: 12px; }
+  .hidden { display: none !important; }
+  footer { text-align: center; color: var(--muted); font-size: 0.78rem; margin-top: 28px; }
+  footer a { color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo" aria-hidden="true">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
+    </div>
+    <div>
+      <h1>TOTP Server</h1>
+      <p class="sub" style="margin:0">RFC 6238 two-factor auth · recovery codes · PASETO sessions</p>
+    </div>
+  </header>
+
+  <div class="tabs" role="tablist">
+    <button class="tab" role="tab" data-panel="enroll" aria-selected="true">1 · Enroll</button>
+    <button class="tab" role="tab" data-panel="confirm" aria-selected="false">2 · Confirm</button>
+    <button class="tab" role="tab" data-panel="login" aria-selected="false">3 · Login</button>
+    <button class="tab" role="tab" data-panel="account" aria-selected="false">Account</button>
+  </div>
+
+  <!-- Enroll -->
+  <section class="card" data-tab="enroll">
+    <h2>Start enrollment</h2>
+    <p class="hint">Provision a secret and scan the QR with Google Authenticator, Authy, 1Password, etc.</p>
+    <label for="en-email">Email</label>
+    <input id="en-email" type="email" placeholder="you@example.com" autocomplete="username" />
+    <button class="go" data-action="enroll">Generate QR code</button>
+    <div id="en-result" class="hidden">
+      <div class="qr" id="en-qr"></div>
+      <label>Manual entry secret</label>
+      <div class="kv" id="en-secret"></div>
+      <p class="hint">Scanned it? Switch to <b>Confirm</b> and enter the 6-digit code your app shows.</p>
+    </div>
+  </section>
+
+  <!-- Confirm -->
+  <section class="card hidden" data-tab="confirm">
+    <h2>Confirm enrollment</h2>
+    <p class="hint">Enter the current code from your authenticator app to activate the account.</p>
+    <label for="cf-email">Email</label>
+    <input id="cf-email" type="email" placeholder="you@example.com" autocomplete="username" />
+    <label for="cf-code">6-digit code</label>
+    <input id="cf-code" class="code" inputmode="numeric" maxlength="8" placeholder="123456" />
+    <button class="go" data-action="confirm">Confirm &amp; get recovery codes</button>
+    <div id="cf-result" class="hidden">
+      <div class="notice warn">⚠ Save these one-time recovery codes now — they are shown only once.</div>
+      <div class="codes" id="cf-codes"></div>
+      <button class="go ghost" data-action="copy-codes">Copy all codes</button>
+    </div>
+  </section>
+
+  <!-- Login -->
+  <section class="card hidden" data-tab="login">
+    <h2>Log in</h2>
+    <p class="hint">Exchange a code for a session token (PASETO v4.local).</p>
+    <label for="lg-email">Email</label>
+    <input id="lg-email" type="email" placeholder="you@example.com" autocomplete="username" />
+    <label for="lg-code">Code or recovery code</label>
+    <input id="lg-code" class="code" maxlength="11" placeholder="123456 or ABCDE-FGHJK" />
+    <div class="row">
+      <button class="go" data-action="login">Log in with code</button>
+      <button class="go ghost" data-action="login-recovery">Use recovery code</button>
+    </div>
+  </section>
+
+  <!-- Account -->
+  <section class="card hidden" data-tab="account">
+    <h2>Account</h2>
+    <p class="hint">Uses the session token from your last successful login.</p>
+    <div id="ac-token-state" class="kv">No active session.</div>
+    <div class="row">
+      <button class="go ghost" data-action="me">Who am I?</button>
+      <button class="go ghost" data-action="regen">Regenerate codes</button>
+    </div>
+    <div style="height:10px"></div>
+    <button class="go ghost" data-action="logout" style="color:var(--err)">Clear session</button>
+    <div id="ac-codes-wrap" class="hidden" style="margin-top:14px">
+      <div class="notice warn">⚠ New recovery codes — old ones are now void.</div>
+      <div class="codes" id="ac-codes"></div>
+    </div>
+  </section>
+
+  <div class="card">
+    <label>Response</label>
+    <div id="out" class="muted">Ready.</div>
+  </div>
+
+  <details class="settings">
+    <summary>Settings</summary>
+    <div class="card" style="margin-top:12px">
+      <label for="api-base">API base URL</label>
+      <input id="api-base" placeholder="(same origin)" />
+      <p class="hint">Leave blank when this page is served by the TOTP server itself. Set it to the
+      server's URL when hosting this UI separately (e.g. on Netlify).</p>
+    </div>
+  </details>
+
+  <footer>
+    <a href="/docs">API docs</a> · <a href="/api-docs/openapi.json">OpenAPI</a> · <a href="/metrics">Metrics</a>
+  </footer>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+(() => {
+  const $ = (s, r = document) => r.querySelector(s);
+  const store = {
+    get base() { try { return localStorage.getItem("totp_api_base") || ""; } catch { return ""; } },
+    set base(v) { try { localStorage.setItem("totp_api_base", v); } catch {} },
+    get token() { try { return localStorage.getItem("totp_token") || ""; } catch { return ""; } },
+    set token(v) { try { v ? localStorage.setItem("totp_token", v) : localStorage.removeItem("totp_token"); } catch {} },
+  };
+
+  const out = $("#out");
+  function show(obj, ok = true) {
+    out.className = ok ? "out-ok" : "out-err";
+    out.textContent = typeof obj === "string" ? obj : JSON.stringify(obj, null, 2);
+  }
+  let toastTimer;
+  function toast(msg) {
+    const t = $("#toast"); t.textContent = msg; t.classList.add("show");
+    clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove("show"), 2200);
+  }
+
+  async function api(method, path, body, auth = false) {
+    const headers = { "Content-Type": "application/json" };
+    if (auth && store.token) headers["Authorization"] = "Bearer " + store.token;
+    const res = await fetch(store.base + path, {
+      method, headers, body: body ? JSON.stringify(body) : undefined,
+    });
+    const text = await res.text();
+    let data; try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
+    if (!res.ok) throw Object.assign(new Error(data.message || res.statusText), { status: res.status, data });
+    return data;
+  }
+
+  // ---- tabs ----
+  document.querySelectorAll(".tab").forEach(tab => {
+    tab.addEventListener("click", () => {
+      document.querySelectorAll(".tab").forEach(t => t.setAttribute("aria-selected", t === tab));
+      const name = tab.dataset.panel;
+      document.querySelectorAll("[data-tab]").forEach(p => p.classList.toggle("hidden", p.dataset.tab !== name));
+      if (name === "account") refreshTokenState();
+    });
+  });
+
+  function refreshTokenState() {
+    $("#ac-token-state").textContent = store.token
+      ? "Session active: " + store.token.slice(0, 24) + "…"
+      : "No active session.";
+  }
+
+  function renderCodes(target, codes) {
+    target.innerHTML = "";
+    codes.forEach(c => { const el = document.createElement("code"); el.textContent = c; target.appendChild(el); });
+  }
+
+  // ---- actions ----
+  const actions = {
+    async enroll(btn) {
+      const email = $("#en-email").value.trim();
+      const data = await api("POST", "/api/v1/enroll", { email });
+      $("#en-qr").innerHTML = data.qr_svg;
+      $("#en-secret").textContent = data.secret;
+      $("#en-result").classList.remove("hidden");
+      $("#cf-email").value = email; $("#lg-email").value = email;
+      show(`Enrolled ${email}. Scan the QR, then confirm.`);
+    },
+    async confirm() {
+      const data = await api("POST", "/api/v1/enroll/confirm", {
+        email: $("#cf-email").value.trim(), code: $("#cf-code").value.trim(),
+      });
+      renderCodes($("#cf-codes"), data.recovery_codes);
+      window._codes = data.recovery_codes;
+      $("#cf-result").classList.remove("hidden");
+      show("Confirmed. Recovery codes issued — save them!");
+    },
+    "copy-codes"() {
+      if (window._codes) { navigator.clipboard?.writeText(window._codes.join("\n")); toast("Codes copied"); }
+    },
+    async login() {
+      const data = await api("POST", "/api/v1/login", {
+        email: $("#lg-email").value.trim(), code: $("#lg-code").value.trim(),
+      });
+      store.token = data.token; refreshTokenState();
+      show({ ...data, token: data.token.slice(0, 32) + "…" });
+      toast("Logged in"); if (data.recovery_codes_remaining <= 2) toast("Low on recovery codes!");
+    },
+    async "login-recovery"() {
+      const data = await api("POST", "/api/v1/login/recovery", {
+        email: $("#lg-email").value.trim(), recovery_code: $("#lg-code").value.trim(),
+      });
+      store.token = data.token; refreshTokenState();
+      show({ ...data, token: data.token.slice(0, 32) + "…" }); toast("Logged in via recovery code");
+    },
+    async me() { show(await api("GET", "/api/v1/me", null, true)); },
+    async regen() {
+      const data = await api("POST", "/api/v1/recovery/regenerate", null, true);
+      renderCodes($("#ac-codes"), data.recovery_codes);
+      $("#ac-codes-wrap").classList.remove("hidden");
+      show("Recovery codes regenerated.");
+    },
+    logout() { store.token = ""; refreshTokenState(); $("#ac-codes-wrap").classList.add("hidden"); show("Session cleared."); },
+  };
+
+  document.addEventListener("click", async (e) => {
+    const btn = e.target.closest("[data-action]");
+    if (!btn) return;
+    const fn = actions[btn.dataset.action];
+    if (!fn) return;
+    btn.disabled = true;
+    try { await fn(btn); }
+    catch (err) { show(`${err.status || ""} ${err.message}`.trim(), false); toast(err.message || "Request failed"); }
+    finally { btn.disabled = false; }
+  });
+
+  // ---- settings ----
+  const baseInput = $("#api-base");
+  baseInput.value = store.base;
+  baseInput.addEventListener("change", () => { store.base = baseInput.value.trim().replace(/\/$/, ""); toast("API base saved"); });
+
+  refreshTokenState();
+})();
+</script>
+</body>
+</html>
