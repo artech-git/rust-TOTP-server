@@ -125,10 +125,12 @@ async fn sweep_stale_schemas(url: &str) {
     for schema in stale {
         // Names come from information_schema and match our own pattern, so
         // quoting them is sufficient.
-        sqlx::query(&format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"))
-            .execute(&mut conn)
-            .await
-            .expect("drop stale schema");
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"
+        )))
+        .execute(&mut conn)
+        .await
+        .expect("drop stale schema");
     }
     conn.close().await.ok();
 }
@@ -661,10 +663,12 @@ async fn legacy_recovery_codes_without_a_lookup_prefix_still_work() {
         .unwrap();
     let schema = state.cfg.database.schema.clone().unwrap();
     let mut conn = sqlx::postgres::PgConnection::connect(&url).await.unwrap();
-    sqlx::query(&format!("SET search_path TO \"{schema}\""))
-        .execute(&mut conn)
-        .await
-        .unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SET search_path TO \"{schema}\""
+    )))
+    .execute(&mut conn)
+    .await
+    .unwrap();
     sqlx::query("INSERT INTO recovery_codes (user_id, code_hash, lookup) VALUES ($1, $2, NULL)")
         .bind(&user.id)
         .bind(&hash)

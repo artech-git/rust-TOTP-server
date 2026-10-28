@@ -3,7 +3,7 @@
   <h1>TOTP Server</h1>
   <p><b>A hardened RFC 6238 two-factor-authentication server in Rust.</b></p>
   <p>
-    <img alt="rust" src="https://img.shields.io/badge/rust-1.88%2B-orange"/>
+    <img alt="rust" src="https://img.shields.io/badge/rust-1.94%2B-orange"/>
     <img alt="axum" src="https://img.shields.io/badge/axum-0.8-blue"/>
     <img alt="license" src="https://img.shields.io/badge/license-MIT-green"/>
   </p>
