@@ -23,6 +23,7 @@ rand_core = { version = "0.6", features = ["getrandom"] }
 rusty_paseto = { version = "0.10", default-features = false, features = ["batteries_included", "v4_local"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls-ring", "postgres", "migrate", "macros"] }
 subtle = "2"
 thiserror = "2"

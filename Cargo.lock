@@ -2298,6 +2298,7 @@ dependencies = [
  "rusty_paseto",
  "serde",
  "serde_json",
+ "sha2",
  "sqlx",
  "subtle",
  "thiserror",

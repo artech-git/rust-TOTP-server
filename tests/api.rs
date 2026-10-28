@@ -23,6 +23,8 @@ use serde_json::{Value, json};
 use totp_server::{
     AppConfig, AppState, build_router,
     config::{Argon2Config, RateLimitBackendKind},
+    crypto::generate_key_hex,
+    ops::rekey_all,
     store::Store,
     totp::TotpService,
 };
@@ -180,9 +182,14 @@ async fn enroll_confirm_login(
     // Recover the raw secret from the store to compute a valid code.
     let user = state.store.get_user_by_email(email).await.unwrap().unwrap();
     let secret = state
-        .cipher
-        .open(&user.secret_enc, email.as_bytes())
-        .unwrap();
+        .keys
+        .open(
+            &user.secret_enc,
+            user.secret_key_id.as_deref(),
+            email.as_bytes(),
+        )
+        .unwrap()
+        .plaintext;
     let code = state.totp.code_at(&secret, TotpService::now()).unwrap();
 
     let (status, body) = call(
@@ -262,9 +269,14 @@ async fn totp_replay_is_rejected() {
     .await;
     let user = state.store.get_user_by_email(email).await.unwrap().unwrap();
     let secret = state
-        .cipher
-        .open(&user.secret_enc, email.as_bytes())
-        .unwrap();
+        .keys
+        .open(
+            &user.secret_enc,
+            user.secret_key_id.as_deref(),
+            email.as_bytes(),
+        )
+        .unwrap()
+        .plaintext;
 
     let code = state.totp.code_at(&secret, TotpService::now()).unwrap();
     call(
@@ -791,4 +803,242 @@ async fn livez_is_served_alongside_health() {
     let (status, body) = call(&app, "GET", "/health", None, None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["status"], "ok");
+}
+
+#[tokio::test]
+async fn logout_revokes_every_session_for_the_account() {
+    let Some((app, state)) = test_app().await else {
+        return;
+    };
+    let email = "bye@example.com";
+    let (first, codes) = enroll_confirm_login(&app, &state, email).await;
+    // A second session, through a recovery code.
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/login/recovery",
+        Some(json!({"email": email, "recovery_code": codes[0]})),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let second = body["token"].as_str().unwrap().to_string();
+    for token in [&first, &second] {
+        let (status, _) = call(&app, "GET", "/api/v1/me", None, Some(token)).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    let (status, _) = call(&app, "POST", "/api/v1/logout", None, Some(&first)).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    for token in [&first, &second] {
+        let (status, _) = call(&app, "GET", "/api/v1/me", None, Some(token)).await;
+        assert_eq!(
+            status,
+            StatusCode::UNAUTHORIZED,
+            "revoked sessions are rejected"
+        );
+    }
+    let (status, _) = call(&app, "POST", "/api/v1/logout", None, Some(&first)).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "a revoked session cannot act"
+    );
+
+    // Logging in again issues a working session under the new version.
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/login/recovery",
+        Some(json!({"email": email, "recovery_code": codes[1]})),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, _) = call(
+        &app,
+        "GET",
+        "/api/v1/me",
+        None,
+        Some(body["token"].as_str().unwrap()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn rotating_the_encryption_key_reseals_secrets_as_they_are_used() {
+    let Some((app, state)) = test_app().await else {
+        return;
+    };
+    let email = "rotate@example.com";
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/v1/enroll",
+        Some(json!({"email": email})),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let before = state.store.get_user_by_email(email).await.unwrap().unwrap();
+    assert_eq!(
+        before.secret_key_id.as_deref(),
+        Some(state.keys.active_id())
+    );
+    let secret = state
+        .keys
+        .open(
+            &before.secret_enc,
+            before.secret_key_id.as_deref(),
+            email.as_bytes(),
+        )
+        .unwrap()
+        .plaintext;
+    let now = TotpService::now();
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/enroll/confirm",
+        Some(json!({"email": email, "code": state.totp.code_at(&secret, now).unwrap()})),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // Rotate: a new active key, the previous one retired.
+    let mut cfg = (*state.cfg).clone();
+    let old_key = cfg.security.secret_encryption_key.clone().unwrap();
+    cfg.security.secret_encryption_key = Some(generate_key_hex());
+    cfg.security.retired_encryption_keys = vec![old_key];
+    let rotated = AppState::new(cfg.clone()).await.unwrap();
+    let rotated_app = build_router(rotated.clone());
+    assert_ne!(rotated.keys.active_id(), state.keys.active_id());
+
+    // Logging in through the rotated instance works and re-seals the row...
+    let (status, body) = call(
+        &rotated_app,
+        "POST",
+        "/api/v1/login",
+        Some(json!({"email": email, "code": state.totp.code_at(&secret, now + 30).unwrap()})),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let after = state.store.get_user_by_email(email).await.unwrap().unwrap();
+    assert_eq!(
+        after.secret_key_id.as_deref(),
+        Some(rotated.keys.active_id())
+    );
+    assert_ne!(after.secret_enc, before.secret_enc);
+
+    // ...so an instance that only knows the new key can read it, while the
+    // old key alone no longer can.
+    cfg.security.retired_encryption_keys.clear();
+    let new_only = AppState::new(cfg).await.unwrap();
+    assert_eq!(
+        new_only
+            .keys
+            .open(
+                &after.secret_enc,
+                after.secret_key_id.as_deref(),
+                email.as_bytes()
+            )
+            .unwrap()
+            .plaintext,
+        secret
+    );
+    assert!(
+        state
+            .keys
+            .open(
+                &after.secret_enc,
+                after.secret_key_id.as_deref(),
+                email.as_bytes()
+            )
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn rekey_reseals_every_row_at_once() {
+    let Some((app, state)) = test_app().await else {
+        return;
+    };
+    for i in 0..3 {
+        let (status, _) = call(
+            &app,
+            "POST",
+            "/api/v1/enroll",
+            Some(json!({"email": format!("bulk{i}@example.com")})),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    let mut cfg = (*state.cfg).clone();
+    let old_key = cfg.security.secret_encryption_key.clone().unwrap();
+    cfg.security.secret_encryption_key = Some(generate_key_hex());
+    cfg.security.retired_encryption_keys = vec![old_key];
+    let rotated = AppState::new(cfg.clone()).await.unwrap();
+
+    let report = rekey_all(&rotated.store, &rotated.keys).await.unwrap();
+    assert_eq!(report.examined, 3);
+    assert_eq!(report.resealed, 3);
+    assert_eq!(report.skipped, 0);
+    // Idempotent: nothing left to do.
+    let again = rekey_all(&rotated.store, &rotated.keys).await.unwrap();
+    assert_eq!(again.resealed, 0);
+
+    cfg.security.retired_encryption_keys.clear();
+    let new_only = AppState::new(cfg).await.unwrap();
+    for i in 0..3 {
+        let email = format!("bulk{i}@example.com");
+        let user = state
+            .store
+            .get_user_by_email(&email)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            user.secret_key_id.as_deref(),
+            Some(new_only.keys.active_id())
+        );
+        assert!(
+            new_only
+                .keys
+                .open(
+                    &user.secret_enc,
+                    user.secret_key_id.as_deref(),
+                    email.as_bytes()
+                )
+                .is_ok()
+        );
+    }
+}
+
+#[tokio::test]
+async fn rotating_the_session_key_keeps_existing_sessions_until_they_expire() {
+    let Some((app, state)) = test_app().await else {
+        return;
+    };
+    let (token, _) = enroll_confirm_login(&app, &state, "paseto@example.com").await;
+
+    let mut cfg = (*state.cfg).clone();
+    let old_key = cfg.security.paseto_key.clone().unwrap();
+    cfg.security.paseto_key = Some(generate_key_hex());
+    cfg.security.retired_paseto_keys = vec![old_key];
+    let rotated = build_router(AppState::new(cfg.clone()).await.unwrap());
+    let (status, _) = call(&rotated, "GET", "/api/v1/me", None, Some(&token)).await;
+    assert_eq!(status, StatusCode::OK, "old sessions survive the rotation");
+
+    cfg.security.retired_paseto_keys.clear();
+    let dropped = build_router(AppState::new(cfg).await.unwrap());
+    let (status, _) = call(&dropped, "GET", "/api/v1/me", None, Some(&token)).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "dropping the retired key ends its sessions"
+    );
 }

@@ -51,6 +51,11 @@ skew = 1                # accepted drift, in steps, on each side of "now"
 # REQUIRED for production. Generate with `totp-server keygen`.
 # secret_encryption_key = "..."   # 64 hex chars — encrypts TOTP secrets at rest
 # paseto_key            = "..."   # 64 hex chars — signs session tokens
+# Rotation: move the previous key here, set a new one above, deploy. Secrets
+# re-seal on use (or all at once with `totp-server rekey`); sessions under a
+# retired paseto key stay valid until they expire. Then drop the old key.
+retired_encryption_keys = []
+retired_paseto_keys = []
 session_ttl_secs = 3600
 recovery_code_count = 10
 

@@ -43,6 +43,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/me", get(account::me))
         .route("/me", delete(account::delete_me))
         .route("/recovery/regenerate", post(account::regenerate_recovery))
+        .route("/logout", post(account::logout))
         // Secrets, recovery codes and tokens must never land in a shared cache.
         .layer(SetResponseHeaderLayer::overriding(
             header::CACHE_CONTROL,

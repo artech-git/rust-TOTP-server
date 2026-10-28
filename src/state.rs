@@ -6,7 +6,7 @@ use tokio::sync::Semaphore;
 
 use crate::{
     config::{AppConfig, RateLimitBackendKind},
-    crypto::SecretCipher,
+    crypto::KeyRing,
     ratelimit::{FailureLimiter, MemoryBackend, PostgresBackend, RateLimitBackend, WindowLimiter},
     recovery::RecoveryHasher,
     store::Store,
@@ -30,7 +30,8 @@ pub struct Decoy {
 pub struct AppState {
     pub cfg: Arc<AppConfig>,
     pub store: Store,
-    pub cipher: Arc<SecretCipher>,
+    /// Active + retired encryption keys for TOTP secrets at rest.
+    pub keys: Arc<KeyRing>,
     pub tokens: Arc<TokenService>,
     pub totp: Arc<TotpService>,
     pub recovery_hasher: Arc<RecoveryHasher>,
@@ -83,12 +84,12 @@ impl AppState {
                 Arc::new(PostgresBackend::new(store.pool().clone()))
             }
         };
-        let cipher = SecretCipher::from_hex_key(&enc_key)?;
+        let keys = KeyRing::new(&enc_key, &cfg.security.retired_encryption_keys)?;
         let recovery_hasher = RecoveryHasher::new(&cfg.security.argon2)?;
 
         let decoy_aad = b"decoy".to_vec();
         let decoy = Decoy {
-            secret_enc: cipher.seal(&TotpService::new_secret(), &decoy_aad)?,
+            secret_enc: keys.seal(&TotpService::new_secret(), &decoy_aad)?,
             aad: decoy_aad,
             recovery_hash: recovery_hasher.hash(&crate::recovery::generate_codes(1)[0])?,
         };
@@ -101,9 +102,10 @@ impl AppState {
         };
 
         Ok(Self {
-            cipher: Arc::new(cipher),
-            tokens: Arc::new(TokenService::from_hex_key(
+            keys: Arc::new(keys),
+            tokens: Arc::new(TokenService::new(
                 &paseto_key,
+                &cfg.security.retired_paseto_keys,
                 cfg.security.session_ttl_secs,
             )?),
             totp: Arc::new(TotpService::new(&cfg.totp)),

@@ -10,6 +10,7 @@
 //! - [`ratelimit`] — failure lockout + fixed-window limiting over per-instance
 //!   or shared (Postgres) state
 //! - [`store`] — Postgres persistence with replay-safe atomic updates
+//! - [`ops`] — operator commands (bulk re-sealing after a key rotation)
 //! - [`routes`] — the HTTP API surface
 
 pub mod config;
@@ -18,6 +19,7 @@ pub mod error;
 pub mod extract;
 pub mod metrics;
 pub mod openapi;
+pub mod ops;
 pub mod ratelimit;
 pub mod recovery;
 pub mod routes;

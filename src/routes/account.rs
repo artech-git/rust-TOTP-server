@@ -23,23 +23,20 @@ pub struct RegenerateResponse {
     security(("bearer" = [])),
     responses(
         (status = 200, description = "Current user", body = MeResponse),
-        (status = 401, description = "Missing or invalid session token", body = crate::error::ErrorBody),
+        (status = 401, description = "Missing, invalid or revoked session token", body = crate::error::ErrorBody),
     )
 )]
 pub async fn me(
     State(state): State<AppState>,
     user: AuthUser,
 ) -> Result<Json<MeResponse>, ApiError> {
-    // Confirm the account still exists (token could outlive a deletion).
-    let record = state
+    let remaining = state
         .store
-        .get_user_by_id(&user.user_id)
-        .await?
-        .ok_or(ApiError::Unauthorized)?;
-    let remaining = state.store.count_unused_recovery_codes(&record.id).await?;
+        .count_unused_recovery_codes(&user.user.id)
+        .await?;
     Ok(Json(MeResponse {
-        user_id: record.id,
-        email: record.email,
+        user_id: user.user.id,
+        email: user.user.email,
         recovery_codes_remaining: remaining,
     }))
 }
@@ -50,24 +47,18 @@ pub async fn me(
     security(("bearer" = [])),
     responses(
         (status = 200, description = "New recovery codes", body = RegenerateResponse),
-        (status = 401, description = "Missing or invalid session token", body = crate::error::ErrorBody),
+        (status = 401, description = "Missing, invalid or revoked session token", body = crate::error::ErrorBody),
     )
 )]
 pub async fn regenerate_recovery(
     State(state): State<AppState>,
     user: AuthUser,
 ) -> Result<Json<RegenerateResponse>, ApiError> {
-    let record = state
-        .store
-        .get_user_by_id(&user.user_id)
-        .await?
-        .ok_or(ApiError::Unauthorized)?;
-
     let codes = crate::recovery::generate_codes(state.cfg.security.recovery_code_count);
     let hashes = crate::routes::auth::hash_codes(&state, &codes).await?;
     state
         .store
-        .replace_recovery_codes(&record.id, &hashes)
+        .replace_recovery_codes(&user.user.id, &hashes)
         .await?;
 
     auth_event("recovery_regenerate", "success");
@@ -76,13 +67,29 @@ pub async fn regenerate_recovery(
     }))
 }
 
+/// Log out everywhere: revoke every session issued for this account,
+/// including the one making the request.
+#[utoipa::path(
+    post, path = "/api/v1/logout", tag = "account",
+    security(("bearer" = [])),
+    responses(
+        (status = 204, description = "All sessions revoked"),
+        (status = 401, description = "Missing, invalid or revoked session token", body = crate::error::ErrorBody),
+    )
+)]
+pub async fn logout(State(state): State<AppState>, user: AuthUser) -> Result<StatusCode, ApiError> {
+    state.store.bump_token_version(&user.user.id).await?;
+    auth_event("logout", "success");
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// Permanently delete the authenticated user and all their data.
 #[utoipa::path(
     delete, path = "/api/v1/me", tag = "account",
     security(("bearer" = [])),
     responses(
         (status = 204, description = "Account deleted"),
-        (status = 401, description = "Missing or invalid session token", body = crate::error::ErrorBody),
+        (status = 401, description = "Missing, invalid or revoked session token", body = crate::error::ErrorBody),
     )
 )]
 pub async fn delete_me(
@@ -90,7 +97,7 @@ pub async fn delete_me(
     user: AuthUser,
 ) -> Result<StatusCode, ApiError> {
     // Recovery codes cascade-delete via the foreign key.
-    if state.store.delete_user(&user.user_id).await? {
+    if state.store.delete_user(&user.user.id).await? {
         auth_event("account_delete", "success");
     }
     Ok(StatusCode::NO_CONTENT)

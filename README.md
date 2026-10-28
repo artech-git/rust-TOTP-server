@@ -83,6 +83,7 @@ Base path `/api/v1`. Full schema at `/docs`.
 | `POST` | `/login/recovery` | — | Log in with a one-time recovery code |
 | `GET` | `/me` | Bearer | Current account + recovery codes remaining |
 | `POST` | `/recovery/regenerate` | Bearer | Replace recovery codes |
+| `POST` | `/logout` | Bearer | Log out everywhere (revoke every session for the account) |
 | `DELETE` | `/me` | Bearer | Delete the account and all its data |
 | `GET` | `/health` · `/metrics` · `/docs` | — | Ops endpoints |
 
@@ -263,8 +264,14 @@ image to GHCR via the release workflow.
   bits behind the hash. Codes issued before this change keep working.
 - **Protect `/metrics`.** Set `server.metrics_token` and scrape with `Authorization: Bearer`;
   without it the endpoint is open and the server logs a warning.
-- **Keep your keys stable and secret.** Rotating `secret_encryption_key` makes stored secrets
-  unreadable; rotating `paseto_key` invalidates all live sessions.
+- **Sessions can be revoked.** Tokens carry the account's `token_version`; `POST /logout`
+  bumps it, which invalidates every session for that account at once. Keep `session_ttl_secs`
+  short for anything finer-grained.
+- **Rotating keys.** Generate a new key with `keygen`, move the current `secret_encryption_key`
+  into `retired_encryption_keys`, set the new one, and deploy. Secrets sealed under the old key
+  are re-sealed the next time they are used; run `totp-server rekey` to do them all at once,
+  then drop the old key from the list. `paseto_key` rotates the same way via
+  `retired_paseto_keys`: old sessions stay valid until they expire, new ones use the new key.
 
 ## License
 
