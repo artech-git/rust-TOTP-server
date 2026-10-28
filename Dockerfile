@@ -1,5 +1,5 @@
 # ---- build stage ----
-FROM rust:1.88-slim-bookworm AS builder
+FROM rust:1.97-slim-bookworm AS builder
 WORKDIR /app
 
 # Cache dependencies: build against a stub main, then the real sources.
@@ -43,7 +43,8 @@ ENV TOTP_SERVER__HOST=0.0.0.0 \
 #     -e TOTP_SECURITY__SECRET_ENCRYPTION_KEY=... \
 #     -e TOTP_SECURITY__PASETO_KEY=... \
 #     -p 3000:3000 totp-server
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD ["/usr/local/bin/totp-server", "--version"]
+# `healthcheck` performs a real GET /livez against the running server.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+    CMD ["/usr/local/bin/totp-server", "healthcheck"]
 
 ENTRYPOINT ["/usr/local/bin/totp-server"]

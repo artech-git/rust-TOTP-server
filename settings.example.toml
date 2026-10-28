@@ -11,6 +11,17 @@ port = 3000
 trust_proxy = false
 # CORS origins for a separately-hosted UI. [] = same-origin only; ["*"] = any.
 cors_allowed_origins = []
+# With trust_proxy: how many proxies append to X-Forwarded-For before this
+# server. The client address is taken that many entries from the END of the
+# header; the leading entries are client-controlled and never trusted.
+trusted_proxy_hops = 1
+# Header your edge OVERWRITES with the client address (preferred when set).
+# client_ip_header = "CF-Connecting-IP"
+# Bearer token required to read /metrics. Unset = open (a warning is logged).
+# metrics_token = "..."
+# Strict-Transport-Security max-age in seconds; 0 disables. Only with HTTPS
+# end to end.
+hsts_max_age_secs = 0
 
 [database]
 # Postgres connection string. Local dev (docker compose / `supabase start`):
@@ -21,6 +32,14 @@ url = "postgres://postgres:postgres@127.0.0.1:54322/postgres"
 max_connections = 5
 connect_timeout_secs = 10
 # schema = "public"      # optional: isolate into a specific Postgres schema
+# Apply embedded migrations at startup (true), or only verify them (false) and
+# run `totp-server migrate` once per deploy instead — recommended with replicas.
+run_migrations_on_start = true
+# Startup connection attempts, with exponential backoff (1, 2, 4, … seconds).
+connect_retries = 5
+# "session" (default) or "transaction" (Supabase port 6543 / PgBouncer
+# transaction pooling; disables the prepared-statement cache so it works).
+pooler_mode = "session"
 
 [totp]
 issuer = "TOTP Server"  # shown in the authenticator app
@@ -32,6 +51,11 @@ skew = 1                # accepted drift, in steps, on each side of "now"
 # REQUIRED for production. Generate with `totp-server keygen`.
 # secret_encryption_key = "..."   # 64 hex chars — encrypts TOTP secrets at rest
 # paseto_key            = "..."   # 64 hex chars — signs session tokens
+# Rotation: move the previous key here, set a new one above, deploy. Secrets
+# re-seal on use (or all at once with `totp-server rekey`); sessions under a
+# retired paseto key stay valid until they expire. Then drop the old key.
+retired_encryption_keys = []
+retired_paseto_keys = []
 session_ttl_secs = 3600
 recovery_code_count = 10
 
@@ -39,10 +63,17 @@ recovery_code_count = 10
 memory_kib = 19456     # OWASP interactive profile
 iterations = 2
 parallelism = 1
+max_concurrency = 0    # Argon2 operations in flight at once; 0 = CPU cores
 
 [rate_limit]
+# "memory" is per process (single instance). "postgres" keeps lockouts and
+# per-IP budgets in the rate_limits table, shared by every replica.
+backend = "memory"
 login_max_failures = 5
 login_window_secs = 300
 lockout_secs = 900
 enroll_max_per_window = 20
 enroll_window_secs = 3600
+# Login/confirm/recovery attempts per client IP per window (all accounts).
+auth_ip_max_per_window = 60
+auth_ip_window_secs = 60

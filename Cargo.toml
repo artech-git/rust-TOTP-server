@@ -2,36 +2,38 @@
 name = "totp-server"
 version = "1.0.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.94"
 description = "A hardened TOTP (RFC 6238) two-factor authentication server with recovery codes, PASETO sessions, and Prometheus metrics"
 license = "MIT"
 repository = "https://github.com/artech-git/rust-TOTP-server"
 
 [dependencies]
 anyhow = "1"
-argon2 = "0.5"
+argon2 = "0.6"
+async-trait = "0.1"
 axum = "0.8"
-chacha20poly1305 = "0.10"
+chacha20poly1305 = "0.11"
 email_address = "0.2"
 figment = { version = "0.10", features = ["toml", "env"] }
+getrandom = "0.4"
 hex = "0.4"
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false }
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
-rand_core = { version = "0.6", features = ["getrandom"] }
 rusty_paseto = { version = "0.10", default-features = false, features = ["batteries_included", "v4_local"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls-ring", "postgres", "migrate", "macros"] }
+sha2 = "0.11"
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls-ring", "postgres", "migrate", "macros"] }
 subtle = "2"
 thiserror = "2"
 time = { version = "0.3", features = ["formatting"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "net", "time"] }
-totp-rs = { version = "5", features = ["otpauth"] }
-tower-http = { version = "0.6", features = ["trace", "timeout", "cors", "limit"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "net", "sync", "time", "io-util"] }
+totp-rs = { version = "6", features = ["otpauth"] }
+tower-http = { version = "0.7", features = ["trace", "timeout", "cors", "limit", "request-id", "set-header"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-utoipa = { version = "5", features = ["axum_extras"] }
+utoipa = { version = "6", features = ["axum_extras"] }
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
