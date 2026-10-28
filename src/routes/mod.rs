@@ -52,6 +52,7 @@ pub fn build_router(state: AppState) -> Router {
     let mut app = Router::new()
         .route("/", get(meta::index))
         .route("/health", get(meta::health))
+        .route("/livez", get(meta::livez))
         .route("/metrics", get(meta::metrics))
         .route("/api-docs/openapi.json", get(meta::openapi_json))
         .route("/docs", get(meta::swagger_ui))

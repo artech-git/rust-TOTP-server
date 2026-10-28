@@ -25,6 +25,7 @@ use crate::routes::{account, auth, meta};
         account::regenerate_recovery,
         account::delete_me,
         meta::health,
+        meta::livez,
     ),
     components(schemas(
         auth::EnrollRequest,

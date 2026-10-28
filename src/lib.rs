@@ -7,7 +7,8 @@
 //! - [`totp`] — RFC 6238 code generation/verification with a drift window
 //! - [`tokens`] — PASETO v4.local session tokens
 //! - [`recovery`] — one-time recovery codes (Argon2id at rest)
-//! - [`ratelimit`] — failure lockout + fixed-window request limiting
+//! - [`ratelimit`] — failure lockout + fixed-window limiting over per-instance
+//!   or shared (Postgres) state
 //! - [`store`] — Postgres persistence with replay-safe atomic updates
 //! - [`routes`] — the HTTP API surface
 

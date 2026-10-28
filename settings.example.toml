@@ -32,6 +32,14 @@ url = "postgres://postgres:postgres@127.0.0.1:54322/postgres"
 max_connections = 5
 connect_timeout_secs = 10
 # schema = "public"      # optional: isolate into a specific Postgres schema
+# Apply embedded migrations at startup (true), or only verify them (false) and
+# run `totp-server migrate` once per deploy instead — recommended with replicas.
+run_migrations_on_start = true
+# Startup connection attempts, with exponential backoff (1, 2, 4, … seconds).
+connect_retries = 5
+# "session" (default) or "transaction" (Supabase port 6543 / PgBouncer
+# transaction pooling; disables the prepared-statement cache so it works).
+pooler_mode = "session"
 
 [totp]
 issuer = "TOTP Server"  # shown in the authenticator app
@@ -53,6 +61,9 @@ parallelism = 1
 max_concurrency = 0    # Argon2 operations in flight at once; 0 = CPU cores
 
 [rate_limit]
+# "memory" is per process (single instance). "postgres" keeps lockouts and
+# per-IP budgets in the rate_limits table, shared by every replica.
+backend = "memory"
 login_max_failures = 5
 login_window_secs = 300
 lockout_secs = 900
