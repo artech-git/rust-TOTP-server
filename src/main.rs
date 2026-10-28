@@ -6,7 +6,7 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
 };
-use totp_server::{AppConfig, AppState, build_router, crypto, store::Store};
+use totp_server::{AppConfig, AppState, build_router, crypto, crypto::KeyRing, store::Store};
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 #[tokio::main]
@@ -14,6 +14,7 @@ async fn main() -> anyhow::Result<()> {
     match std::env::args().nth(1).as_deref() {
         Some("keygen") => keygen(),
         Some("migrate") => migrate().await,
+        Some("rekey") => rekey().await,
         Some("healthcheck") => healthcheck().await,
         Some("--version" | "-V") => {
             println!("totp-server {}", env!("CARGO_PKG_VERSION"));
@@ -105,6 +106,31 @@ async fn migrate() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Re-seal every stored TOTP secret with the active encryption key, so a
+/// retired key can be removed from the configuration.
+async fn rekey() -> anyhow::Result<()> {
+    init_tracing();
+    let cfg = AppConfig::load().context("failed to load configuration")?;
+    let active = cfg
+        .security
+        .secret_encryption_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|k| !k.is_empty())
+        .context("security.secret_encryption_key must be set to rekey")?;
+    let keys = KeyRing::new(active, &cfg.security.retired_encryption_keys)
+        .context("invalid encryption keys")?;
+    let store = Store::connect(&cfg.database).await?;
+    let report = totp_server::ops::rekey_all(&store, &keys).await?;
+    tracing::info!(
+        examined = report.examined,
+        resealed = report.resealed,
+        skipped = report.skipped,
+        "rekey complete"
+    );
+    Ok(())
+}
+
 /// Probe the running server's `/livez` (for the container HEALTHCHECK, which
 /// has no curl). Exits non-zero unless it answers 200.
 async fn healthcheck() -> anyhow::Result<()> {
@@ -155,6 +181,7 @@ fn print_help() {
          USAGE:\n    \
              totp-server              Run the HTTP server\n    \
              totp-server migrate      Apply database migrations and exit\n    \
+             totp-server rekey        Re-seal stored secrets with the active encryption key\n    \
              totp-server healthcheck  Probe the running server's /livez (exit 0 = healthy)\n    \
              totp-server keygen       Generate encryption + session keys\n    \
              totp-server --version    Print version\n    \

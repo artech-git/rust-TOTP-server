@@ -5,13 +5,17 @@ use axum::{
     http::{HeaderMap, header::AUTHORIZATION, request::Parts},
 };
 
-use crate::{config::ServerConfig, error::ApiError, state::AppState};
+use crate::{config::ServerConfig, error::ApiError, state::AppState, store::UserRecord};
 
 /// Extractor for authenticated routes: validates the `Authorization: Bearer`
-/// PASETO session token and exposes its claims.
+/// PASETO session token, loads the account, and rejects sessions that have
+/// been revoked (the token's `ver` claim must match the stored
+/// `token_version`).
 pub struct AuthUser {
     pub user_id: String,
     pub email: String,
+    /// The account as currently stored.
+    pub user: UserRecord,
 }
 
 impl FromRequestParts<AppState> for AuthUser {
@@ -34,9 +38,18 @@ impl FromRequestParts<AppState> for AuthUser {
             .tokens
             .verify(token.trim())
             .ok_or(ApiError::Unauthorized)?;
+        let user = state
+            .store
+            .get_user_by_id(&claims.user_id)
+            .await?
+            .ok_or(ApiError::Unauthorized)?;
+        if user.token_version != claims.version {
+            return Err(ApiError::Unauthorized);
+        }
         Ok(Self {
             user_id: claims.user_id,
             email: claims.email,
+            user,
         })
     }
 }

@@ -125,6 +125,14 @@ pub struct SecurityConfig {
     pub secret_encryption_key: Option<String>,
     /// 64 hex chars (32 bytes). Signs/encrypts PASETO v4.local session tokens.
     pub paseto_key: Option<String>,
+    /// Previous `secret_encryption_key`s, kept so secrets sealed under them
+    /// can still be opened. Such a secret is re-sealed with the active key the
+    /// next time it is used, and `totp-server rekey` does it for every row at
+    /// once; remove a key from this list once nothing references it.
+    pub retired_encryption_keys: Vec<String>,
+    /// Previous `paseto_key`s: sessions issued under them stay valid until
+    /// they expire, while new sessions use the active key.
+    pub retired_paseto_keys: Vec<String>,
     /// Session token lifetime in seconds.
     pub session_ttl_secs: u64,
     /// Number of one-time recovery codes issued at enrollment.
@@ -211,6 +219,8 @@ impl Default for SecurityConfig {
         Self {
             secret_encryption_key: None,
             paseto_key: None,
+            retired_encryption_keys: Vec::new(),
+            retired_paseto_keys: Vec::new(),
             session_ttl_secs: 3600,
             recovery_code_count: 10,
             argon2: Argon2Config::default(),

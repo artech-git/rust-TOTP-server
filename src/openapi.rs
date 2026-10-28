@@ -24,6 +24,7 @@ use crate::routes::{account, auth, meta};
         account::me,
         account::regenerate_recovery,
         account::delete_me,
+        account::logout,
         meta::health,
         meta::livez,
     ),

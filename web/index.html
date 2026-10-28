@@ -161,7 +161,7 @@
       <button class="go ghost" data-action="regen">Regenerate codes</button>
     </div>
     <div style="height:10px"></div>
-    <button class="go ghost" data-action="logout" style="color:var(--err)">Clear session</button>
+    <button class="go ghost" data-action="logout" style="color:var(--err)">Log out everywhere</button>
     <div id="ac-codes-wrap" class="hidden" style="margin-top:14px">
       <div class="notice warn">⚠ New recovery codes — old ones are now void.</div>
       <div class="codes" id="ac-codes"></div>
@@ -289,7 +289,15 @@
       $("#ac-codes-wrap").classList.remove("hidden");
       show("Recovery codes regenerated.");
     },
-    logout() { store.token = ""; refreshTokenState(); $("#ac-codes-wrap").classList.add("hidden"); show("Session cleared."); },
+    async logout() {
+      let revoked = false;
+      if (store.token) {
+        try { await api("POST", "/api/v1/logout", null, true); revoked = true; }
+        catch (err) { /* the session may already be expired or revoked */ }
+      }
+      store.token = ""; refreshTokenState(); $("#ac-codes-wrap").classList.add("hidden");
+      show(revoked ? "Logged out everywhere: every session for this account is revoked." : "Session cleared.");
+    },
   };
 
   document.addEventListener("click", async (e) => {

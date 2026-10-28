@@ -26,8 +26,13 @@ pub struct UserRecord {
     pub id: String,
     pub email: String,
     pub secret_enc: Vec<u8>,
+    /// Which encryption key sealed `secret_enc`; `None` for rows sealed
+    /// before key ids were recorded.
+    pub secret_key_id: Option<String>,
     pub totp_confirmed: bool,
     pub last_used_period: i64,
+    /// Bumped to revoke every session issued so far.
+    pub token_version: i32,
     pub created_at: i64,
 }
 
@@ -36,13 +41,16 @@ fn row_to_user(row: &PgRow) -> UserRecord {
         id: row.get("id"),
         email: row.get("email"),
         secret_enc: row.get("secret_enc"),
+        secret_key_id: row.get("secret_key_id"),
         totp_confirmed: row.get("totp_confirmed"),
         last_used_period: row.get("last_used_period"),
+        token_version: row.get("token_version"),
         created_at: row.get("created_at"),
     }
 }
 
-const USER_COLUMNS: &str = "id, email, secret_enc, totp_confirmed, last_used_period, created_at";
+const USER_COLUMNS: &str = "id, email, secret_enc, secret_key_id, totp_confirmed, \
+                            last_used_period, token_version, created_at";
 
 /// A Postgres schema name is safe to interpolate only if it is a plain
 /// identifier. We double-quote it anyway, but reject anything exotic up front
@@ -215,12 +223,15 @@ impl Store {
         id: &str,
         email: &str,
         secret_enc: &[u8],
+        key_id: &str,
     ) -> Result<Option<String>, sqlx::Error> {
         let row = sqlx::query(
-            "INSERT INTO users (id, email, secret_enc, totp_confirmed, last_used_period, created_at, updated_at) \
-             VALUES ($1, $2, $3, FALSE, 0, $4, $4) \
+            "INSERT INTO users (id, email, secret_enc, secret_key_id, totp_confirmed, \
+                                last_used_period, created_at, updated_at) \
+             VALUES ($1, $2, $3, $4, FALSE, 0, $5, $5) \
              ON CONFLICT (email) DO UPDATE SET \
                secret_enc = EXCLUDED.secret_enc, \
+               secret_key_id = EXCLUDED.secret_key_id, \
                last_used_period = 0, \
                updated_at = EXCLUDED.updated_at \
              WHERE users.totp_confirmed = FALSE \
@@ -229,6 +240,7 @@ impl Store {
         .bind(id)
         .bind(email)
         .bind(secret_enc)
+        .bind(key_id)
         .bind(unix_now())
         .fetch_optional(&self.pool)
         .await?;
@@ -350,6 +362,58 @@ impl Store {
         .fetch_one(&self.pool)
         .await?;
         Ok(row.get("n"))
+    }
+
+    /// Replace a sealed secret with a copy sealed under another key. Compares
+    /// against the blob that was read (`expected_enc`) so a concurrent
+    /// re-enrollment is never overwritten; `false` means nothing changed.
+    pub async fn reseal_secret(
+        &self,
+        id: &str,
+        expected_enc: &[u8],
+        secret_enc: &[u8],
+        key_id: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let result = sqlx::query(
+            "UPDATE users SET secret_enc = $1, secret_key_id = $2, updated_at = $3 \
+             WHERE id = $4 AND secret_enc = $5",
+        )
+        .bind(secret_enc)
+        .bind(key_id)
+        .bind(unix_now())
+        .bind(id)
+        .bind(expected_enc)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Invalidate every session issued for the user so far.
+    pub async fn bump_token_version(&self, id: &str) -> Result<bool, sqlx::Error> {
+        let result = sqlx::query(
+            "UPDATE users SET token_version = token_version + 1, updated_at = $1 WHERE id = $2",
+        )
+        .bind(unix_now())
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// A page of users ordered by id, for batch operations such as rekeying.
+    pub async fn list_users_after(
+        &self,
+        after_id: &str,
+        limit: i64,
+    ) -> Result<Vec<UserRecord>, sqlx::Error> {
+        let rows = sqlx::query(&format!(
+            "SELECT {USER_COLUMNS} FROM users WHERE id > $1 ORDER BY id LIMIT $2"
+        ))
+        .bind(after_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.iter().map(row_to_user).collect())
     }
 
     pub async fn delete_user(&self, id: &str) -> Result<bool, sqlx::Error> {

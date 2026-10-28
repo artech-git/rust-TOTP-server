@@ -13,6 +13,7 @@ use crate::{
     recovery::{self, HashedCode},
     routes::normalize_email,
     state::AppState,
+    store::UserRecord,
     totp::TotpService,
 };
 
@@ -107,7 +108,7 @@ pub async fn enroll(
 
     let secret = TotpService::new_secret();
     let secret_enc = state
-        .cipher
+        .keys
         .seal(&secret, email.as_bytes())
         .map_err(|e| ApiError::Internal(e.into()))?;
 
@@ -116,7 +117,7 @@ pub async fn enroll(
     let candidate_id = Uuid::new_v4().to_string();
     let Some(user_id) = state
         .store
-        .upsert_pending_user(&candidate_id, &email, &secret_enc)
+        .upsert_pending_user(&candidate_id, &email, &secret_enc, state.keys.active_id())
         .await?
     else {
         auth_event("enroll", "conflict");
@@ -174,10 +175,7 @@ pub async fn confirm(
         return Err(ApiError::Conflict("account is already confirmed".into()));
     }
 
-    let secret = state
-        .cipher
-        .open(&user.secret_enc, email.as_bytes())
-        .map_err(|e| ApiError::Internal(e.into()))?;
+    let secret = open_secret(&state, &user).await?;
 
     let now = TotpService::now();
     let matched = state
@@ -237,10 +235,7 @@ pub async fn login(
     let user = state.store.get_user_by_email(&email).await?;
     let authenticated = match &user {
         Some(u) if u.totp_confirmed => {
-            let secret = state
-                .cipher
-                .open(&u.secret_enc, email.as_bytes())
-                .map_err(|e| ApiError::Internal(e.into()))?;
+            let secret = open_secret(&state, u).await?;
             match state
                 .totp
                 .verify(&secret, &req.code, TotpService::now())
@@ -267,7 +262,7 @@ pub async fn login(
     let user = user.expect("authenticated implies user exists");
     state.login_limiter.clear(&email).await?;
     auth_event("login", "success");
-    issue_session(&state, &user.id, &user.email).await
+    issue_session(&state, &user).await
 }
 
 /// Authenticate with a one-time recovery code (lost-device fallback).
@@ -320,7 +315,7 @@ pub async fn login_recovery(
 
     state.login_limiter.clear(&email).await?;
     auth_event("recovery_login", "success");
-    issue_session(&state, &u.id, &u.email).await
+    issue_session(&state, &u).await
 }
 
 // ----------------------------------- helpers -------------------------------------
@@ -339,9 +334,48 @@ async fn throttle_ip(state: &AppState, ip: IpAddr, event: &'static str) -> Resul
 /// Do the decrypt + HOTP work of a real verification against decoy material,
 /// so unknown and unconfirmed accounts take as long as real ones.
 fn decoy_totp_check(state: &AppState, code: &str) {
-    if let Ok(secret) = state.cipher.open(&state.decoy.secret_enc, &state.decoy.aad) {
-        let _ = state.totp.verify(&secret, code, TotpService::now());
+    if let Ok(opened) = state.keys.open(
+        &state.decoy.secret_enc,
+        Some(state.keys.active_id()),
+        &state.decoy.aad,
+    ) {
+        let _ = state
+            .totp
+            .verify(&opened.plaintext, code, TotpService::now());
     }
+}
+
+/// Open a user's sealed TOTP secret. A secret sealed by a retired key (or
+/// before key ids were recorded) is re-sealed with the active key in passing,
+/// so a key rotation completes lazily as accounts are used.
+async fn open_secret(state: &AppState, user: &UserRecord) -> Result<Vec<u8>, ApiError> {
+    let opened = state
+        .keys
+        .open(
+            &user.secret_enc,
+            user.secret_key_id.as_deref(),
+            user.email.as_bytes(),
+        )
+        .map_err(|e| ApiError::Internal(e.into()))?;
+    if opened.needs_reseal {
+        let resealed = state
+            .keys
+            .seal(&opened.plaintext, user.email.as_bytes())
+            .map_err(|e| ApiError::Internal(e.into()))?;
+        if let Err(err) = state
+            .store
+            .reseal_secret(
+                &user.id,
+                &user.secret_enc,
+                &resealed,
+                state.keys.active_id(),
+            )
+            .await
+        {
+            tracing::warn!(error = %err, "could not re-seal the secret with the active key");
+        }
+    }
+    Ok(opened.plaintext)
 }
 
 async fn register_failure(state: &AppState, email: &str) -> Result<(), ApiError> {
@@ -357,14 +391,13 @@ async fn register_failure(state: &AppState, email: &str) -> Result<(), ApiError>
 
 async fn issue_session(
     state: &AppState,
-    user_id: &str,
-    email: &str,
+    user: &UserRecord,
 ) -> Result<Json<SessionResponse>, ApiError> {
     let (token, expires_at) = state
         .tokens
-        .issue(user_id, email)
+        .issue(&user.id, &user.email, user.token_version)
         .map_err(ApiError::Internal)?;
-    let remaining = state.store.count_unused_recovery_codes(user_id).await?;
+    let remaining = state.store.count_unused_recovery_codes(&user.id).await?;
     Ok(Json(SessionResponse {
         token,
         token_type: "Bearer",
