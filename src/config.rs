@@ -33,6 +33,21 @@ pub struct ServerConfig {
     /// only); `["*"]` allows any origin — useful when the demo UI is hosted
     /// elsewhere (e.g. Netlify) and talks to this API cross-origin.
     pub cors_allowed_origins: Vec<String>,
+    /// Number of reverse proxies that append to `X-Forwarded-For` before a
+    /// request reaches this server (used only with `trust_proxy`). The client
+    /// address is taken that many entries from the *end* of the header; the
+    /// leading entries are client-controlled and never trusted.
+    pub trusted_proxy_hops: u8,
+    /// Header the edge proxy *overwrites* with the client address (for
+    /// example `CF-Connecting-IP` or `True-Client-IP`). Preferred over
+    /// `X-Forwarded-For` when set and `trust_proxy` is on.
+    pub client_ip_header: Option<String>,
+    /// Bearer token required to read `/metrics`. Unset leaves the endpoint
+    /// open and logs a warning at startup.
+    pub metrics_token: Option<String>,
+    /// Emit `Strict-Transport-Security` with this max-age (0 disables). Turn
+    /// on only when the service is reached over HTTPS end to end.
+    pub hsts_max_age_secs: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,7 +65,42 @@ pub struct DatabaseConfig {
     /// Optional Postgres schema to isolate into (sets the connection
     /// `search_path`). Unset means the default (`public`) schema; the
     /// integration tests use this for per-test isolation on one database.
+    /// Needs `pooler_mode = "session"`.
     pub schema: Option<String>,
+    /// Apply the embedded migrations when the server starts (default). With
+    /// several replicas, turn this off and apply them once per deploy with
+    /// `totp-server migrate`; the server then only verifies the schema
+    /// version at boot.
+    pub run_migrations_on_start: bool,
+    /// Attempts to reach the database at startup before giving up, with
+    /// exponential backoff (1, 2, 4, … seconds). Lets a paused or still
+    /// booting database come up without the service crash-looping.
+    pub connect_retries: u32,
+    /// `session` (default) or `transaction`. Transaction-mode poolers
+    /// (Supabase on port 6543, PgBouncer) share server connections between
+    /// clients, so the prepared-statement cache is disabled in that mode.
+    pub pooler_mode: PoolerMode,
+}
+
+/// How the connection string's endpoint multiplexes connections.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PoolerMode {
+    #[default]
+    Session,
+    Transaction,
+}
+
+/// Where rate-limit counters live.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RateLimitBackendKind {
+    /// Per process. Correct for a single instance.
+    #[default]
+    Memory,
+    /// The `rate_limits` table in the application database, shared by every
+    /// replica. Use this whenever more than one instance runs.
+    Postgres,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -89,11 +139,17 @@ pub struct Argon2Config {
     pub memory_kib: u32,
     pub iterations: u32,
     pub parallelism: u32,
+    /// Maximum Argon2 operations in flight at once (0 = number of CPU cores).
+    /// Each one pins a blocking thread and `memory_kib` of RAM for its
+    /// duration.
+    pub max_concurrency: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RateLimitConfig {
+    /// `memory` (default, single instance) or `postgres` (shared by replicas).
+    pub backend: RateLimitBackendKind,
     /// Failed code/recovery attempts allowed per window before lockout.
     pub login_max_failures: u32,
     pub login_window_secs: u64,
@@ -102,6 +158,10 @@ pub struct RateLimitConfig {
     /// Enrollment requests allowed per client IP per window.
     pub enroll_max_per_window: u32,
     pub enroll_window_secs: u64,
+    /// Login, confirm and recovery attempts allowed per client IP per window,
+    /// across all accounts. Bounds the work one source can trigger.
+    pub auth_ip_max_per_window: u32,
+    pub auth_ip_window_secs: u64,
 }
 
 impl Default for ServerConfig {
@@ -111,6 +171,10 @@ impl Default for ServerConfig {
             port: 3000,
             trust_proxy: false,
             cors_allowed_origins: Vec::new(),
+            trusted_proxy_hops: 1,
+            client_ip_header: None,
+            metrics_token: None,
+            hsts_max_age_secs: 0,
         }
     }
 }
@@ -124,6 +188,9 @@ impl Default for DatabaseConfig {
             max_connections: 5,
             connect_timeout_secs: 10,
             schema: None,
+            run_migrations_on_start: true,
+            connect_retries: 5,
+            pooler_mode: PoolerMode::Session,
         }
     }
 }
@@ -158,6 +225,7 @@ impl Default for Argon2Config {
             memory_kib: 19_456,
             iterations: 2,
             parallelism: 1,
+            max_concurrency: 0,
         }
     }
 }
@@ -165,11 +233,14 @@ impl Default for Argon2Config {
 impl Default for RateLimitConfig {
     fn default() -> Self {
         Self {
+            backend: RateLimitBackendKind::Memory,
             login_max_failures: 5,
             login_window_secs: 300,
             lockout_secs: 900,
             enroll_max_per_window: 20,
             enroll_window_secs: 3600,
+            auth_ip_max_per_window: 60,
+            auth_ip_window_secs: 60,
         }
     }
 }
@@ -229,8 +300,26 @@ impl AppConfig {
             "database.max_connections must be >= 1"
         );
         anyhow::ensure!(
+            self.server.trusted_proxy_hops >= 1,
+            "server.trusted_proxy_hops must be >= 1"
+        );
+        anyhow::ensure!(
+            self.rate_limit.auth_ip_max_per_window >= 1,
+            "rate_limit.auth_ip_max_per_window must be >= 1"
+        );
+        anyhow::ensure!(
             !self.database.url.trim().is_empty(),
             "database.url must be set (e.g. TOTP_DATABASE__URL or DATABASE_URL)"
+        );
+        anyhow::ensure!(
+            !(self.database.pooler_mode == PoolerMode::Transaction
+                && self
+                    .database
+                    .schema
+                    .as_deref()
+                    .is_some_and(|s| !s.trim().is_empty())),
+            "database.schema isolation relies on a per-connection search_path and needs \
+             pooler_mode = \"session\""
         );
         Ok(())
     }

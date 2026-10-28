@@ -40,7 +40,7 @@ testable service with the security properties a 2FA server actually needs.
 | 🎫 **PASETO v4.local sessions** | Stateless, encrypted, expiring bearer tokens — no JWT `alg` footguns. |
 | 🔁 **Replay protection** | Each accepted code's time-step is recorded; the same code can never be used twice, enforced atomically in SQL. |
 | 🧯 **Recovery codes** | One-time backup codes (Argon2id-hashed) for lost devices, regenerable from the API. |
-| 🚦 **Rate limiting & lockout** | Per-account failure lockout and per-IP enrollment throttling. |
+| 🚦 **Rate limiting & lockout** | Per-account failure lockout plus per-IP throttles on enrollment and on every login-family endpoint. |
 | ⏱️ **Constant-time checks** | Codes compared with `subtle`; no user-enumeration (login always returns a generic 401). |
 | 📖 **OpenAPI + Swagger UI** | Interactive docs at `/docs`, spec at `/api-docs/openapi.json`. |
 | 📊 **Prometheus metrics** | Request and auth-event counters/histograms at `/metrics`. |
@@ -96,7 +96,7 @@ curl -s -XPOST localhost:3000/api/v1/enroll \
 # 2. Add the otpauth URL to your authenticator, then confirm with the code it shows
 curl -s -XPOST localhost:3000/api/v1/enroll/confirm \
   -H 'content-type: application/json' -d '{"email":"alice@example.com","code":"123456"}'
-#    → { "confirmed": true, "recovery_codes": ["ABCDE-FGHJK", ...] }
+#    → { "confirmed": true, "recovery_codes": ["ABCD-EFGH-JKMN", ...] }
 
 # 3. Log in to get a session token
 curl -s -XPOST localhost:3000/api/v1/login \
@@ -137,9 +137,10 @@ Netlify (static UI)  ──calls──▶  Render (Rust API, free web service)  
    `postgres://postgres.<ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres`
    Append `?sslmode=require`.
 
-   > Use the **Session** pooler (port **5432**), **not** the Transaction pooler (6543): sqlx
-   > relies on prepared statements, which the transaction pooler doesn't support. The direct
-   > connection also works but is IPv6-only, which Render/Fly egress may not have.
+   > The **Session** pooler (port **5432**) works as is. The **Transaction** pooler (6543)
+   > shares server connections between clients, so set `database.pooler_mode = "transaction"`
+   > for it (this turns off sqlx's prepared-statement cache). The direct connection also works
+   > but is IPv6-only, which Render/Fly egress may not have.
 
    No schema setup is needed — the server creates its tables on first boot via the embedded
    migrations. (Free Postgres pauses after ~7 days of inactivity; the first request wakes it.)
@@ -180,6 +181,39 @@ docker run -p 3000:3000 \
   totp-server
 ```
 
+## Scaling out
+
+The service is stateless apart from its rate-limit counters, and the two things that must be
+exact across instances — TOTP replay protection and recovery-code burning — are atomic
+conditional updates in Postgres. Running several replicas behind a load balancer is therefore
+safe once the counters are shared:
+
+1. **Share the rate limits.** Set `rate_limit.backend = "postgres"`
+   (`TOTP_RATE_LIMIT__BACKEND=postgres`). Account lockouts and per-IP budgets then live in the
+   `rate_limits` table and are enforced by every replica; each check is one small upsert. The
+   default `memory` backend is per process and only correct for a single instance.
+2. **Apply migrations once per deploy, not once per replica.** Set
+   `database.run_migrations_on_start = false` and run `totp-server migrate` as a release-phase
+   or pre-deploy job. Replicas then verify the schema version at boot and refuse to start
+   against a stale one.
+3. **Use a transaction pooler when replicas multiply.** Supabase's transaction pooler (port
+   6543) and PgBouncer share server connections; with `database.pooler_mode = "transaction"`
+   the prepared-statement cache is disabled so that works. Keep the sum of `max_connections`
+   across replicas under the pooler's client limit.
+4. **Probe the right things.** `/livez` answers whenever the process is up and is the
+   liveness probe (it is also what the Docker `HEALTHCHECK` calls through
+   `totp-server healthcheck`); `/health` additionally pings the database and is the readiness
+   probe. Keeping them apart means a database blip does not restart every replica at once.
+5. **Let the database come up.** Startup retries the connection with backoff
+   (`database.connect_retries`), so a paused free-tier database or a slow boot does not
+   crash-loop the service.
+
+Capacity: one small instance serves on the order of 10k authenticated requests/s against a
+loopback database; the only expensive operation is Argon2id for recovery codes (~20 ms per
+hash, bounded by `argon2.max_concurrency`). Replicas are for availability and regional latency
+more than throughput. Keep them in one region next to the single Postgres primary, since the
+login path writes on every request.
+
 ## Development
 
 Bring up a local Postgres (or `supabase start`), then:
@@ -190,7 +224,7 @@ docker compose up -d       # Postgres on :54322 (matches the default DATABASE_UR
 cargo test                 # unit tests + 11 integration tests (see note below)
 cargo clippy --all-targets # lint
 cargo fmt --all            # format
-cargo run -- --help        # CLI usage
+cargo run -- --help        # CLI usage (serve, migrate, healthcheck, keygen)
 ```
 
 The integration tests in [`tests/api.rs`](./tests/api.rs) need a Postgres; point
@@ -210,13 +244,25 @@ image to GHCR via the release workflow.
 
 ## Security notes
 
-- **Single-instance by design.** Rate-limit state is in-memory, so run one instance (the
-  free-tier model: one Render/Fly container in front of Supabase Postgres). The database
-  itself scales independently; horizontal *compute* scaling would need a shared store (e.g.
-  Redis) for the limiter — a deliberate scope choice.
+- **One instance by default, more with one setting.** Rate-limit state is in-memory unless
+  `rate_limit.backend = "postgres"`; with the default, run one instance (the free-tier model:
+  one Render/Fly container in front of Supabase Postgres). See [Scaling out](#scaling-out)
+  for the multi-replica setup.
 - **Account-lockout tradeoff.** Login failures lock the *account* to stop code brute-forcing;
   this is the standard 2FA control and does allow a known-email actor to force a temporary
-  lockout. Tune the window in `[rate_limit]`.
+  lockout. Tune the window in `[rate_limit]`. A separate per-client-IP budget
+  (`auth_ip_max_per_window`) covers login, confirm and recovery together, so one source cannot
+  spray attempts across many accounts.
+- **Behind a proxy, count your hops.** With `server.trust_proxy`, the client address is read
+  from `X-Forwarded-For` *from the end*, `trusted_proxy_hops` entries back (default 1), because
+  proxies append and the leading entries are whatever the client sent. If your edge sets a
+  dedicated header (Cloudflare's `CF-Connecting-IP`), name it in `client_ip_header` instead.
+- **Recovery codes cost one hash.** Each code's first two symbols are stored in clear as an
+  index so a recovery attempt verifies a single Argon2id hash (off the async runtime, bounded by
+  `argon2.max_concurrency`) instead of every unused code; the remaining ten symbols keep ≈49
+  bits behind the hash. Codes issued before this change keep working.
+- **Protect `/metrics`.** Set `server.metrics_token` and scrape with `Authorization: Bearer`;
+  without it the endpoint is open and the server logs a warning.
 - **Keep your keys stable and secret.** Rotating `secret_encryption_key` makes stored secrets
   unreadable; rotating `paseto_key` invalidates all live sessions.
 

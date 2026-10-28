@@ -1,11 +1,19 @@
+use std::net::IpAddr;
+
 use axum::{Json, extract::State};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::{
-    error::ApiError, extract::ClientIp, metrics::auth_event, routes::normalize_email,
-    state::AppState, totp::TotpService,
+    error::ApiError,
+    extract::ClientIp,
+    metrics::auth_event,
+    ratelimit::Decision,
+    recovery::{self, HashedCode},
+    routes::normalize_email,
+    state::AppState,
+    totp::TotpService,
 };
 
 // ----------------------------- request/response DTOs -----------------------------
@@ -56,7 +64,7 @@ pub struct LoginRequest {
 pub struct RecoveryLoginRequest {
     #[schema(example = "alice@example.com")]
     pub email: String,
-    #[schema(example = "ABCDE-FGHJK")]
+    #[schema(example = "ABCD-EFGH-JKMN")]
     pub recovery_code: String,
 }
 
@@ -89,11 +97,11 @@ pub async fn enroll(
     ClientIp(ip): ClientIp,
     Json(req): Json<EnrollRequest>,
 ) -> Result<Json<EnrollResponse>, ApiError> {
-    if let Err(retry) = state.enroll_limiter.try_acquire(&ip.to_string()) {
+    if let Decision::Limited { retry_after_secs } =
+        state.enroll_limiter.try_acquire(&ip.to_string()).await?
+    {
         auth_event("enroll", "rate_limited");
-        return Err(ApiError::RateLimited {
-            retry_after_secs: retry,
-        });
+        return Err(ApiError::RateLimited { retry_after_secs });
     }
     let email = normalize_email(&req.email)?;
 
@@ -103,25 +111,19 @@ pub async fn enroll(
         .seal(&secret, email.as_bytes())
         .map_err(|e| ApiError::Internal(e.into()))?;
 
-    let user_id = Uuid::new_v4().to_string();
-    let created = state
+    // An existing pending row keeps its original id when enrollment is
+    // restarted, so the id that actually persisted comes back from the store.
+    let candidate_id = Uuid::new_v4().to_string();
+    let Some(user_id) = state
         .store
-        .upsert_pending_user(&user_id, &email, &secret_enc)
-        .await?;
-    if !created {
+        .upsert_pending_user(&candidate_id, &email, &secret_enc)
+        .await?
+    else {
         auth_event("enroll", "conflict");
         return Err(ApiError::Conflict(
             "an account with this email already exists".into(),
         ));
-    }
-
-    // Re-read so we return the id of the row that actually persisted (an
-    // existing pending row keeps its original id on re-enrollment).
-    let user = state
-        .store
-        .get_user_by_email(&email)
-        .await?
-        .ok_or_else(|| ApiError::Internal(anyhow::anyhow!("user vanished after upsert")))?;
+    };
 
     let otpauth_url = state
         .totp
@@ -131,7 +133,7 @@ pub async fn enroll(
 
     auth_event("enroll", "started");
     Ok(Json(EnrollResponse {
-        user_id: user.id,
+        user_id,
         secret: TotpService::secret_base32(&secret),
         otpauth_url,
         qr_svg,
@@ -153,18 +155,19 @@ pub async fn enroll(
 )]
 pub async fn confirm(
     State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
     Json(req): Json<ConfirmRequest>,
 ) -> Result<Json<ConfirmResponse>, ApiError> {
+    throttle_ip(&state, ip, "confirm").await?;
     let email = normalize_email(&req.email)?;
     let limiter_key = format!("confirm:{email}");
-    if let Err(retry) = state.login_limiter.check(&limiter_key) {
-        return Err(ApiError::RateLimited {
-            retry_after_secs: retry,
-        });
+    if let Decision::Limited { retry_after_secs } = state.login_limiter.check(&limiter_key).await? {
+        return Err(ApiError::RateLimited { retry_after_secs });
     }
 
     let Some(user) = state.store.get_user_by_email(&email).await? else {
-        state.login_limiter.record_failure(&limiter_key);
+        decoy_totp_check(&state, &req.code);
+        state.login_limiter.record_failure(&limiter_key).await?;
         return Err(ApiError::Unauthorized);
     };
     if user.totp_confirmed {
@@ -182,7 +185,7 @@ pub async fn confirm(
         .verify(&secret, &req.code, now)
         .map_err(|e| ApiError::Internal(e.into()))?;
     let Some(period) = matched else {
-        state.login_limiter.record_failure(&limiter_key);
+        state.login_limiter.record_failure(&limiter_key).await?;
         auth_event("confirm", "failure");
         return Err(ApiError::Unauthorized);
     };
@@ -192,14 +195,14 @@ pub async fn confirm(
         return Err(ApiError::Conflict("account is already confirmed".into()));
     }
 
-    let codes = crate::recovery::generate_codes(state.cfg.security.recovery_code_count);
+    let codes = recovery::generate_codes(state.cfg.security.recovery_code_count);
     let hashes = hash_codes(&state, &codes).await?;
     state
         .store
         .replace_recovery_codes(&user.id, &hashes)
         .await?;
 
-    state.login_limiter.clear(&limiter_key);
+    state.login_limiter.clear(&limiter_key).await?;
     auth_event("confirm", "success");
     Ok(Json(ConfirmResponse {
         confirmed: true,
@@ -214,19 +217,19 @@ pub async fn confirm(
     responses(
         (status = 200, description = "Authenticated", body = SessionResponse),
         (status = 401, description = "Invalid credentials", body = crate::error::ErrorBody),
-        (status = 429, description = "Account temporarily locked", body = crate::error::ErrorBody),
+        (status = 429, description = "Account temporarily locked or client throttled", body = crate::error::ErrorBody),
     )
 )]
 pub async fn login(
     State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
     Json(req): Json<LoginRequest>,
 ) -> Result<Json<SessionResponse>, ApiError> {
+    throttle_ip(&state, ip, "login").await?;
     let email = normalize_email(&req.email)?;
-    if let Err(retry) = state.login_limiter.check(&email) {
+    if let Decision::Limited { retry_after_secs } = state.login_limiter.check(&email).await? {
         auth_event("login", "rate_limited");
-        return Err(ApiError::RateLimited {
-            retry_after_secs: retry,
-        });
+        return Err(ApiError::RateLimited { retry_after_secs });
     }
 
     // Always resolve the user, but fold every failure into one generic error
@@ -249,17 +252,20 @@ pub async fn login(
                 None => false,
             }
         }
-        _ => false,
+        _ => {
+            decoy_totp_check(&state, &req.code);
+            false
+        }
     };
 
     if !authenticated {
-        register_failure(&state, &email);
+        register_failure(&state, &email).await?;
         auth_event("login", "failure");
         return Err(ApiError::Unauthorized);
     }
 
     let user = user.expect("authenticated implies user exists");
-    state.login_limiter.clear(&email);
+    state.login_limiter.clear(&email).await?;
     auth_event("login", "success");
     issue_session(&state, &user.id, &user.email).await
 }
@@ -271,59 +277,82 @@ pub async fn login(
     responses(
         (status = 200, description = "Authenticated", body = SessionResponse),
         (status = 401, description = "Invalid credentials", body = crate::error::ErrorBody),
-        (status = 429, description = "Account temporarily locked", body = crate::error::ErrorBody),
+        (status = 429, description = "Account temporarily locked or client throttled", body = crate::error::ErrorBody),
     )
 )]
 pub async fn login_recovery(
     State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
     Json(req): Json<RecoveryLoginRequest>,
 ) -> Result<Json<SessionResponse>, ApiError> {
+    throttle_ip(&state, ip, "recovery_login").await?;
     let email = normalize_email(&req.email)?;
-    if let Err(retry) = state.login_limiter.check(&email) {
+    if let Decision::Limited { retry_after_secs } = state.login_limiter.check(&email).await? {
         auth_event("recovery_login", "rate_limited");
-        return Err(ApiError::RateLimited {
-            retry_after_secs: retry,
-        });
+        return Err(ApiError::RateLimited { retry_after_secs });
     }
 
     let user = state.store.get_user_by_email(&email).await?;
+    // Only the codes sharing the presented code's lookup prefix are candidates
+    // (normally exactly one), so a recovery attempt costs one Argon2id
+    // verification instead of one per unused code.
+    let lookup = recovery::lookup_key(&req.recovery_code);
+    let candidates = match &user {
+        Some(u) if u.totp_confirmed => state.store.candidate_recovery_codes(&u.id, &lookup).await?,
+        _ => Vec::new(),
+    };
+    let matched = verify_recovery_code(&state, &req.recovery_code, candidates).await?;
+
     let mut authenticated_user = None;
-    if let Some(u) = &user
-        && u.totp_confirmed
+    if let (Some(u), Some(code_id)) = (&user, matched)
+        // Atomically burn the code; if another request burned it first,
+        // this attempt fails.
+        && state.store.mark_recovery_code_used(code_id).await?
     {
-        for (code_id, hash) in state.store.unused_recovery_codes(&u.id).await? {
-            if state.recovery_hasher.verify(&req.recovery_code, &hash) {
-                // Atomically burn the code; if another request burned it
-                // first, this attempt fails.
-                if state.store.mark_recovery_code_used(code_id).await? {
-                    authenticated_user = Some(u.clone());
-                }
-                break;
-            }
-        }
+        authenticated_user = Some(u.clone());
     }
 
     let Some(u) = authenticated_user else {
-        register_failure(&state, &email);
+        register_failure(&state, &email).await?;
         auth_event("recovery_login", "failure");
         return Err(ApiError::Unauthorized);
     };
 
-    state.login_limiter.clear(&email);
+    state.login_limiter.clear(&email).await?;
     auth_event("recovery_login", "success");
     issue_session(&state, &u.id, &u.email).await
 }
 
 // ----------------------------------- helpers -------------------------------------
 
-fn register_failure(state: &AppState, email: &str) {
-    if let Some(secs) = state.login_limiter.record_failure(email) {
+/// Per-client-IP budget shared by login, confirm and recovery.
+async fn throttle_ip(state: &AppState, ip: IpAddr, event: &'static str) -> Result<(), ApiError> {
+    if let Decision::Limited { retry_after_secs } =
+        state.auth_ip_limiter.try_acquire(&ip.to_string()).await?
+    {
+        auth_event(event, "ip_throttled");
+        return Err(ApiError::RateLimited { retry_after_secs });
+    }
+    Ok(())
+}
+
+/// Do the decrypt + HOTP work of a real verification against decoy material,
+/// so unknown and unconfirmed accounts take as long as real ones.
+fn decoy_totp_check(state: &AppState, code: &str) {
+    if let Ok(secret) = state.cipher.open(&state.decoy.secret_enc, &state.decoy.aad) {
+        let _ = state.totp.verify(&secret, code, TotpService::now());
+    }
+}
+
+async fn register_failure(state: &AppState, email: &str) -> Result<(), ApiError> {
+    if let Some(secs) = state.login_limiter.record_failure(email).await? {
         auth_event("login", "lockout");
         tracing::warn!(
             lockout_secs = secs,
             "account locked after repeated failures"
         );
     }
+    Ok(())
 }
 
 async fn issue_session(
@@ -344,17 +373,64 @@ async fn issue_session(
     }))
 }
 
-/// Hash recovery codes off the async runtime (Argon2id is CPU-bound).
-pub async fn hash_codes(state: &AppState, codes: &[String]) -> Result<Vec<String>, ApiError> {
+/// Hash recovery codes off the async runtime (Argon2id is CPU-bound), holding
+/// a gate permit for the duration so bursts cannot exhaust the blocking pool.
+pub async fn hash_codes(state: &AppState, codes: &[String]) -> Result<Vec<HashedCode>, ApiError> {
+    let permit = state
+        .argon2_gate
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|e| ApiError::Internal(e.into()))?;
     let hasher = state.recovery_hasher.clone();
     let codes = codes.to_vec();
     tokio::task::spawn_blocking(move || {
+        let _permit = permit;
         codes
             .iter()
-            .map(|c| hasher.hash(c))
+            .map(|code| {
+                Ok(HashedCode {
+                    hash: hasher.hash(code)?,
+                    lookup: recovery::lookup_key(code),
+                })
+            })
             .collect::<anyhow::Result<Vec<_>>>()
     })
     .await
     .map_err(|e| ApiError::Internal(e.into()))?
     .map_err(ApiError::Internal)
+}
+
+/// Verify a presented recovery code against the candidate hashes, off the
+/// async runtime and behind the Argon2 gate. An empty candidate list (unknown
+/// account, or no code with that prefix) still costs one verification, against
+/// the decoy hash, so timing does not reveal which case it was. Returns the id
+/// of the matching code.
+async fn verify_recovery_code(
+    state: &AppState,
+    code: &str,
+    candidates: Vec<(i64, String)>,
+) -> Result<Option<i64>, ApiError> {
+    let permit = state
+        .argon2_gate
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|e| ApiError::Internal(e.into()))?;
+    let hasher = state.recovery_hasher.clone();
+    let decoy = state.decoy.clone();
+    let code = code.to_string();
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        if candidates.is_empty() {
+            hasher.verify(&code, &decoy.recovery_hash);
+            return None;
+        }
+        candidates
+            .into_iter()
+            .find(|(_, hash)| hasher.verify(&code, hash))
+            .map(|(id, _)| id)
+    })
+    .await
+    .map_err(|e| ApiError::Internal(e.into()))
 }
