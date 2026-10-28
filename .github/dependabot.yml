@@ -1,0 +1,22 @@
+# Keeps the lockfile, the workflow actions and the Docker base images current.
+# Minor and patch Cargo updates are grouped into one weekly PR so the noise
+# stays low; majors still arrive individually.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
