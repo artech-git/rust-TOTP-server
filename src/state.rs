@@ -5,9 +5,9 @@ use metrics_exporter_prometheus::PrometheusHandle;
 use tokio::sync::Semaphore;
 
 use crate::{
-    config::AppConfig,
+    config::{AppConfig, RateLimitBackendKind},
     crypto::SecretCipher,
-    ratelimit::{FailureLimiter, WindowLimiter},
+    ratelimit::{FailureLimiter, MemoryBackend, PostgresBackend, RateLimitBackend, WindowLimiter},
     recovery::RecoveryHasher,
     store::Store,
     tokens::TokenService,
@@ -70,6 +70,19 @@ impl AppState {
         }
 
         let store = Store::connect(&cfg.database).await?;
+        let limits: Arc<dyn RateLimitBackend> = match cfg.rate_limit.backend {
+            RateLimitBackendKind::Memory => {
+                tracing::info!(
+                    "rate limits are per instance (memory); set rate_limit.backend = \
+                     \"postgres\" when running more than one replica"
+                );
+                Arc::new(MemoryBackend::new())
+            }
+            RateLimitBackendKind::Postgres => {
+                tracing::info!("rate limits are shared across replicas (postgres)");
+                Arc::new(PostgresBackend::new(store.pool().clone()))
+            }
+        };
         let cipher = SecretCipher::from_hex_key(&enc_key)?;
         let recovery_hasher = RecoveryHasher::new(&cfg.security.argon2)?;
 
@@ -96,15 +109,21 @@ impl AppState {
             totp: Arc::new(TotpService::new(&cfg.totp)),
             recovery_hasher: Arc::new(recovery_hasher),
             login_limiter: Arc::new(FailureLimiter::new(
+                limits.clone(),
+                "account",
                 cfg.rate_limit.login_max_failures,
                 Duration::from_secs(cfg.rate_limit.login_window_secs),
                 Duration::from_secs(cfg.rate_limit.lockout_secs),
             )),
             enroll_limiter: Arc::new(WindowLimiter::new(
+                limits.clone(),
+                "enroll-ip",
                 cfg.rate_limit.enroll_max_per_window,
                 Duration::from_secs(cfg.rate_limit.enroll_window_secs),
             )),
             auth_ip_limiter: Arc::new(WindowLimiter::new(
+                limits,
+                "auth-ip",
                 cfg.rate_limit.auth_ip_max_per_window,
                 Duration::from_secs(cfg.rate_limit.auth_ip_window_secs),
             )),

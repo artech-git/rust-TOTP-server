@@ -41,7 +41,18 @@ pub async fn index() -> Html<&'static str> {
     Html(INDEX_HTML)
 }
 
-/// Liveness + database readiness probe.
+/// Liveness probe: the process is up and serving requests. Deliberately does
+/// not touch the database, so an outage there does not get every replica
+/// restarted; use `/health` as the readiness probe instead.
+#[utoipa::path(
+    get, path = "/livez", tag = "meta",
+    responses((status = 200, description = "Process alive")),
+)]
+pub async fn livez() -> Response {
+    (StatusCode::OK, Json(json!({"status": "alive"}))).into_response()
+}
+
+/// Readiness probe: the process is up and the database answers.
 #[utoipa::path(
     get, path = "/health", tag = "meta",
     responses(
