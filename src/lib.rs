@@ -7,8 +7,10 @@
 //! - [`totp`] — RFC 6238 code generation/verification with a drift window
 //! - [`tokens`] — PASETO v4.local session tokens
 //! - [`recovery`] — one-time recovery codes (Argon2id at rest)
-//! - [`ratelimit`] — failure lockout + fixed-window request limiting
+//! - [`ratelimit`] — failure lockout + fixed-window limiting over per-instance
+//!   or shared (Postgres) state
 //! - [`store`] — Postgres persistence with replay-safe atomic updates
+//! - [`ops`] — operator commands (bulk re-sealing after a key rotation)
 //! - [`routes`] — the HTTP API surface
 
 pub mod config;
@@ -17,6 +19,7 @@ pub mod error;
 pub mod extract;
 pub mod metrics;
 pub mod openapi;
+pub mod ops;
 pub mod ratelimit;
 pub mod recovery;
 pub mod routes;
