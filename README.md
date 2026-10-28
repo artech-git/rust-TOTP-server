@@ -40,7 +40,7 @@ testable service with the security properties a 2FA server actually needs.
 | 🎫 **PASETO v4.local sessions** | Stateless, encrypted, expiring bearer tokens — no JWT `alg` footguns. |
 | 🔁 **Replay protection** | Each accepted code's time-step is recorded; the same code can never be used twice, enforced atomically in SQL. |
 | 🧯 **Recovery codes** | One-time backup codes (Argon2id-hashed) for lost devices, regenerable from the API. |
-| 🚦 **Rate limiting & lockout** | Per-account failure lockout and per-IP enrollment throttling. |
+| 🚦 **Rate limiting & lockout** | Per-account failure lockout plus per-IP throttles on enrollment and on every login-family endpoint. |
 | ⏱️ **Constant-time checks** | Codes compared with `subtle`; no user-enumeration (login always returns a generic 401). |
 | 📖 **OpenAPI + Swagger UI** | Interactive docs at `/docs`, spec at `/api-docs/openapi.json`. |
 | 📊 **Prometheus metrics** | Request and auth-event counters/histograms at `/metrics`. |
@@ -96,7 +96,7 @@ curl -s -XPOST localhost:3000/api/v1/enroll \
 # 2. Add the otpauth URL to your authenticator, then confirm with the code it shows
 curl -s -XPOST localhost:3000/api/v1/enroll/confirm \
   -H 'content-type: application/json' -d '{"email":"alice@example.com","code":"123456"}'
-#    → { "confirmed": true, "recovery_codes": ["ABCDE-FGHJK", ...] }
+#    → { "confirmed": true, "recovery_codes": ["ABCD-EFGH-JKMN", ...] }
 
 # 3. Log in to get a session token
 curl -s -XPOST localhost:3000/api/v1/login \
@@ -216,7 +216,19 @@ image to GHCR via the release workflow.
   Redis) for the limiter — a deliberate scope choice.
 - **Account-lockout tradeoff.** Login failures lock the *account* to stop code brute-forcing;
   this is the standard 2FA control and does allow a known-email actor to force a temporary
-  lockout. Tune the window in `[rate_limit]`.
+  lockout. Tune the window in `[rate_limit]`. A separate per-client-IP budget
+  (`auth_ip_max_per_window`) covers login, confirm and recovery together, so one source cannot
+  spray attempts across many accounts.
+- **Behind a proxy, count your hops.** With `server.trust_proxy`, the client address is read
+  from `X-Forwarded-For` *from the end*, `trusted_proxy_hops` entries back (default 1), because
+  proxies append and the leading entries are whatever the client sent. If your edge sets a
+  dedicated header (Cloudflare's `CF-Connecting-IP`), name it in `client_ip_header` instead.
+- **Recovery codes cost one hash.** Each code's first two symbols are stored in clear as an
+  index so a recovery attempt verifies a single Argon2id hash (off the async runtime, bounded by
+  `argon2.max_concurrency`) instead of every unused code; the remaining ten symbols keep ≈49
+  bits behind the hash. Codes issued before this change keep working.
+- **Protect `/metrics`.** Set `server.metrics_token` and scrape with `Authorization: Bearer`;
+  without it the endpoint is open and the server logs a warning.
 - **Keep your keys stable and secret.** Rotating `secret_encryption_key` makes stored secrets
   unreadable; rotating `paseto_key` invalidates all live sessions.
 

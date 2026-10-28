@@ -1,12 +1,13 @@
 use axum::{
     Json,
     extract::State,
-    http::{StatusCode, header},
+    http::{HeaderMap, StatusCode, header},
     response::{Html, IntoResponse, Response},
 };
 use serde_json::json;
+use subtle::ConstantTimeEq;
 
-use crate::state::AppState;
+use crate::{error::ApiError, state::AppState};
 
 /// Self-contained demo web UI (also publishable as a static site).
 const INDEX_HTML: &str = include_str!("../../web/index.html");
@@ -62,8 +63,30 @@ pub async fn health(State(state): State<AppState>) -> Response {
     }
 }
 
-/// Prometheus metrics in text exposition format.
-pub async fn metrics(State(state): State<AppState>) -> Response {
+/// Prometheus metrics in text exposition format. When `server.metrics_token`
+/// is set, the scrape must present it as a bearer token.
+pub async fn metrics(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Some(expected) = state
+        .cfg
+        .server
+        .metrics_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+    {
+        let presented = headers
+            .get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|h| {
+                h.strip_prefix("Bearer ")
+                    .or_else(|| h.strip_prefix("bearer "))
+            })
+            .map(str::trim)
+            .unwrap_or("");
+        if !bool::from(presented.as_bytes().ct_eq(expected.as_bytes())) {
+            return ApiError::Unauthorized.into_response();
+        }
+    }
     (
         [(header::CONTENT_TYPE, "text/plain; version=0.0.4")],
         state.metrics.render(),
