@@ -23,6 +23,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --uid 10001 --home /app appuser \
+    && mkdir -p /app \
     && chown -R appuser:appuser /app
 
 WORKDIR /app
