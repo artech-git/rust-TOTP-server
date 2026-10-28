@@ -1,5 +1,5 @@
 # ---- build stage ----
-FROM rust:1.88-slim-bookworm AS builder
+FROM rust:1.97-slim-bookworm AS builder
 WORKDIR /app
 
 # Cache dependencies: build against a stub main, then the real sources.

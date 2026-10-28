@@ -1,7 +1,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use subtle::ConstantTimeEq;
-use totp_rs::{Algorithm, Secret, TOTP};
+use totp_rs::{Algorithm, Builder, Secret, Totp};
 
 use crate::config::TotpConfig;
 
@@ -52,25 +52,27 @@ impl TotpService {
     }
 
     pub fn secret_base32(secret: &[u8]) -> String {
-        Secret::Raw(secret.to_vec()).to_encoded().to_string()
+        Secret::from(secret).to_base32()
     }
 
-    fn context(&self, secret: &[u8], account: &str) -> Result<TOTP, TotpError> {
-        TOTP::new(
-            Algorithm::SHA1,
-            self.digits as usize,
-            self.skew,
-            self.step,
-            secret.to_vec(),
-            Some(self.issuer.clone()),
-            account.replace(':', "-"),
-        )
-        .map_err(|e| TotpError::Context(e.to_string()))
+    fn context(&self, secret: &[u8], account: &str) -> Result<Totp, TotpError> {
+        Builder::new()
+            .with_algorithm(Algorithm::SHA1)
+            .with_digits(self.digits as u8)
+            .with_skew(u16::from(self.skew))
+            .with_step_duration(self.step)
+            .with_secret(secret)
+            .with_issuer(Some(self.issuer.clone()))
+            .with_account_name(account.replace(':', "-"))
+            .build()
+            .map_err(|e| TotpError::Context(e.to_string()))
     }
 
     /// `otpauth://` provisioning URI for authenticator apps.
     pub fn otpauth_url(&self, secret: &[u8], account: &str) -> Result<String, TotpError> {
-        Ok(self.context(secret, account)?.get_url())
+        self.context(secret, account)?
+            .to_url()
+            .map_err(|e| TotpError::Context(e.to_string()))
     }
 
     /// Render the provisioning URI as an SVG QR code.
@@ -88,7 +90,7 @@ impl TotpService {
 
     /// Code for an explicit Unix timestamp (used by tests and tooling).
     pub fn code_at(&self, secret: &[u8], time: u64) -> Result<String, TotpError> {
-        Ok(self.context(secret, "account")?.generate(time))
+        Ok(self.context(secret, "account")?.generate(time).to_string())
     }
 
     /// Verify `code` against the window `[now - skew*step, now + skew*step]`.
@@ -108,7 +110,7 @@ impl TotpService {
             if t < 0 {
                 continue;
             }
-            let candidate = ctx.generate(t as u64);
+            let candidate = ctx.generate(t as u64).to_string();
             if candidate.as_bytes().ct_eq(code.as_bytes()).into() {
                 matched = Some(t as u64 / self.step);
             }

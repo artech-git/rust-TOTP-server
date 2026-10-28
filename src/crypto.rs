@@ -2,7 +2,6 @@ use chacha20poly1305::{
     XChaCha20Poly1305, XNonce,
     aead::{Aead, KeyInit, Payload},
 };
-use rand_core::{OsRng, RngCore};
 use sha2::{Digest, Sha256};
 
 const NONCE_LEN: usize = 24;
@@ -11,7 +10,7 @@ pub const KEY_LEN: usize = 32;
 /// Fill an array with cryptographically secure random bytes from the OS.
 pub fn random_bytes<const N: usize>() -> [u8; N] {
     let mut buf = [0u8; N];
-    OsRng.fill_bytes(&mut buf);
+    getrandom::fill(&mut buf).expect("operating system randomness is unavailable");
     buf
 }
 
@@ -68,11 +67,11 @@ impl SecretCipher {
 
     pub fn seal(&self, plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>, CryptoError> {
         let nonce_bytes = random_bytes::<NONCE_LEN>();
-        let nonce = XNonce::from_slice(&nonce_bytes);
+        let nonce = XNonce::from(nonce_bytes);
         let ct = self
             .cipher
             .encrypt(
-                nonce,
+                &nonce,
                 Payload {
                     msg: plaintext,
                     aad,
@@ -90,9 +89,9 @@ impl SecretCipher {
             return Err(CryptoError::Unsealable);
         }
         let (nonce_bytes, ct) = blob.split_at(NONCE_LEN);
-        let nonce = XNonce::from_slice(nonce_bytes);
+        let nonce = XNonce::try_from(nonce_bytes).map_err(|_| CryptoError::Unsealable)?;
         self.cipher
-            .decrypt(nonce, Payload { msg: ct, aad })
+            .decrypt(&nonce, Payload { msg: ct, aad })
             .map_err(|_| CryptoError::Unsealable)
     }
 }

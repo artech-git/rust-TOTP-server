@@ -1,7 +1,7 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use sqlx::{
-    Connection, Row,
+    AssertSqlSafe, Connection, Row,
     migrate::Migrator,
     postgres::{PgConnectOptions, PgConnection, PgPool, PgPoolOptions, PgRow},
 };
@@ -49,8 +49,14 @@ fn row_to_user(row: &PgRow) -> UserRecord {
     }
 }
 
-const USER_COLUMNS: &str = "id, email, secret_enc, secret_key_id, totp_confirmed, \
-                            last_used_period, token_version, created_at";
+/// Column list of `users` in the order [`row_to_user`] reads it. A macro so
+/// it can be spliced into static query strings with `concat!`.
+macro_rules! user_columns {
+    () => {
+        "id, email, secret_enc, secret_key_id, totp_confirmed, \
+         last_used_period, token_version, created_at"
+    };
+}
 
 /// A Postgres schema name is safe to interpolate only if it is a plain
 /// identifier. We double-quote it anyway, but reject anything exotic up front
@@ -151,9 +157,12 @@ impl Store {
             // Create it once up front so concurrent pool connections don't
             // race on `CREATE SCHEMA IF NOT EXISTS`.
             let mut conn = PgConnection::connect_with(connect_options).await?;
-            sqlx::query(&format!("CREATE SCHEMA IF NOT EXISTS \"{s}\""))
-                .execute(&mut conn)
-                .await?;
+            // `s` was validated to be a plain identifier by `is_safe_schema`.
+            sqlx::query(AssertSqlSafe(format!(
+                "CREATE SCHEMA IF NOT EXISTS \"{s}\""
+            )))
+            .execute(&mut conn)
+            .await?;
             conn.close().await?;
         }
 
@@ -167,7 +176,7 @@ impl Store {
             pool_options = pool_options.after_connect(move |conn, _meta| {
                 let sql = sql.clone();
                 Box::pin(async move {
-                    sqlx::query(&sql).execute(conn).await?;
+                    sqlx::query(AssertSqlSafe(sql)).execute(conn).await?;
                     Ok(())
                 })
             });
@@ -248,8 +257,10 @@ impl Store {
     }
 
     pub async fn get_user_by_email(&self, email: &str) -> Result<Option<UserRecord>, sqlx::Error> {
-        let row = sqlx::query(&format!(
-            "SELECT {USER_COLUMNS} FROM users WHERE email = $1"
+        let row = sqlx::query(concat!(
+            "SELECT ",
+            user_columns!(),
+            " FROM users WHERE email = $1"
         ))
         .bind(email)
         .fetch_optional(&self.pool)
@@ -258,10 +269,14 @@ impl Store {
     }
 
     pub async fn get_user_by_id(&self, id: &str) -> Result<Option<UserRecord>, sqlx::Error> {
-        let row = sqlx::query(&format!("SELECT {USER_COLUMNS} FROM users WHERE id = $1"))
-            .bind(id)
-            .fetch_optional(&self.pool)
-            .await?;
+        let row = sqlx::query(concat!(
+            "SELECT ",
+            user_columns!(),
+            " FROM users WHERE id = $1"
+        ))
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
         Ok(row.as_ref().map(row_to_user))
     }
 
@@ -406,8 +421,10 @@ impl Store {
         after_id: &str,
         limit: i64,
     ) -> Result<Vec<UserRecord>, sqlx::Error> {
-        let rows = sqlx::query(&format!(
-            "SELECT {USER_COLUMNS} FROM users WHERE id > $1 ORDER BY id LIMIT $2"
+        let rows = sqlx::query(concat!(
+            "SELECT ",
+            user_columns!(),
+            " FROM users WHERE id > $1 ORDER BY id LIMIT $2"
         ))
         .bind(after_id)
         .bind(limit)
