@@ -9,6 +9,7 @@ use crate::{
     error::ApiError,
     extract::ClientIp,
     metrics::auth_event,
+    ratelimit::Decision,
     recovery::{self, HashedCode},
     routes::normalize_email,
     state::AppState,
@@ -96,11 +97,11 @@ pub async fn enroll(
     ClientIp(ip): ClientIp,
     Json(req): Json<EnrollRequest>,
 ) -> Result<Json<EnrollResponse>, ApiError> {
-    if let Err(retry) = state.enroll_limiter.try_acquire(&ip.to_string()) {
+    if let Decision::Limited { retry_after_secs } =
+        state.enroll_limiter.try_acquire(&ip.to_string()).await?
+    {
         auth_event("enroll", "rate_limited");
-        return Err(ApiError::RateLimited {
-            retry_after_secs: retry,
-        });
+        return Err(ApiError::RateLimited { retry_after_secs });
     }
     let email = normalize_email(&req.email)?;
 
@@ -157,18 +158,16 @@ pub async fn confirm(
     ClientIp(ip): ClientIp,
     Json(req): Json<ConfirmRequest>,
 ) -> Result<Json<ConfirmResponse>, ApiError> {
-    throttle_ip(&state, ip, "confirm")?;
+    throttle_ip(&state, ip, "confirm").await?;
     let email = normalize_email(&req.email)?;
     let limiter_key = format!("confirm:{email}");
-    if let Err(retry) = state.login_limiter.check(&limiter_key) {
-        return Err(ApiError::RateLimited {
-            retry_after_secs: retry,
-        });
+    if let Decision::Limited { retry_after_secs } = state.login_limiter.check(&limiter_key).await? {
+        return Err(ApiError::RateLimited { retry_after_secs });
     }
 
     let Some(user) = state.store.get_user_by_email(&email).await? else {
         decoy_totp_check(&state, &req.code);
-        state.login_limiter.record_failure(&limiter_key);
+        state.login_limiter.record_failure(&limiter_key).await?;
         return Err(ApiError::Unauthorized);
     };
     if user.totp_confirmed {
@@ -186,7 +185,7 @@ pub async fn confirm(
         .verify(&secret, &req.code, now)
         .map_err(|e| ApiError::Internal(e.into()))?;
     let Some(period) = matched else {
-        state.login_limiter.record_failure(&limiter_key);
+        state.login_limiter.record_failure(&limiter_key).await?;
         auth_event("confirm", "failure");
         return Err(ApiError::Unauthorized);
     };
@@ -203,7 +202,7 @@ pub async fn confirm(
         .replace_recovery_codes(&user.id, &hashes)
         .await?;
 
-    state.login_limiter.clear(&limiter_key);
+    state.login_limiter.clear(&limiter_key).await?;
     auth_event("confirm", "success");
     Ok(Json(ConfirmResponse {
         confirmed: true,
@@ -226,13 +225,11 @@ pub async fn login(
     ClientIp(ip): ClientIp,
     Json(req): Json<LoginRequest>,
 ) -> Result<Json<SessionResponse>, ApiError> {
-    throttle_ip(&state, ip, "login")?;
+    throttle_ip(&state, ip, "login").await?;
     let email = normalize_email(&req.email)?;
-    if let Err(retry) = state.login_limiter.check(&email) {
+    if let Decision::Limited { retry_after_secs } = state.login_limiter.check(&email).await? {
         auth_event("login", "rate_limited");
-        return Err(ApiError::RateLimited {
-            retry_after_secs: retry,
-        });
+        return Err(ApiError::RateLimited { retry_after_secs });
     }
 
     // Always resolve the user, but fold every failure into one generic error
@@ -262,13 +259,13 @@ pub async fn login(
     };
 
     if !authenticated {
-        register_failure(&state, &email);
+        register_failure(&state, &email).await?;
         auth_event("login", "failure");
         return Err(ApiError::Unauthorized);
     }
 
     let user = user.expect("authenticated implies user exists");
-    state.login_limiter.clear(&email);
+    state.login_limiter.clear(&email).await?;
     auth_event("login", "success");
     issue_session(&state, &user.id, &user.email).await
 }
@@ -288,13 +285,11 @@ pub async fn login_recovery(
     ClientIp(ip): ClientIp,
     Json(req): Json<RecoveryLoginRequest>,
 ) -> Result<Json<SessionResponse>, ApiError> {
-    throttle_ip(&state, ip, "recovery_login")?;
+    throttle_ip(&state, ip, "recovery_login").await?;
     let email = normalize_email(&req.email)?;
-    if let Err(retry) = state.login_limiter.check(&email) {
+    if let Decision::Limited { retry_after_secs } = state.login_limiter.check(&email).await? {
         auth_event("recovery_login", "rate_limited");
-        return Err(ApiError::RateLimited {
-            retry_after_secs: retry,
-        });
+        return Err(ApiError::RateLimited { retry_after_secs });
     }
 
     let user = state.store.get_user_by_email(&email).await?;
@@ -318,12 +313,12 @@ pub async fn login_recovery(
     }
 
     let Some(u) = authenticated_user else {
-        register_failure(&state, &email);
+        register_failure(&state, &email).await?;
         auth_event("recovery_login", "failure");
         return Err(ApiError::Unauthorized);
     };
 
-    state.login_limiter.clear(&email);
+    state.login_limiter.clear(&email).await?;
     auth_event("recovery_login", "success");
     issue_session(&state, &u.id, &u.email).await
 }
@@ -331,12 +326,12 @@ pub async fn login_recovery(
 // ----------------------------------- helpers -------------------------------------
 
 /// Per-client-IP budget shared by login, confirm and recovery.
-fn throttle_ip(state: &AppState, ip: IpAddr, event: &'static str) -> Result<(), ApiError> {
-    if let Err(retry) = state.auth_ip_limiter.try_acquire(&ip.to_string()) {
+async fn throttle_ip(state: &AppState, ip: IpAddr, event: &'static str) -> Result<(), ApiError> {
+    if let Decision::Limited { retry_after_secs } =
+        state.auth_ip_limiter.try_acquire(&ip.to_string()).await?
+    {
         auth_event(event, "ip_throttled");
-        return Err(ApiError::RateLimited {
-            retry_after_secs: retry,
-        });
+        return Err(ApiError::RateLimited { retry_after_secs });
     }
     Ok(())
 }
@@ -349,14 +344,15 @@ fn decoy_totp_check(state: &AppState, code: &str) {
     }
 }
 
-fn register_failure(state: &AppState, email: &str) {
-    if let Some(secs) = state.login_limiter.record_failure(email) {
+async fn register_failure(state: &AppState, email: &str) -> Result<(), ApiError> {
+    if let Some(secs) = state.login_limiter.record_failure(email).await? {
         auth_event("login", "lockout");
         tracing::warn!(
             lockout_secs = secs,
             "account locked after repeated failures"
         );
     }
+    Ok(())
 }
 
 async fn issue_session(

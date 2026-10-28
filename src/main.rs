@@ -1,14 +1,20 @@
 use std::net::SocketAddr;
+use std::time::Duration;
 
 use anyhow::Context;
-use tokio::net::TcpListener;
-use totp_server::{AppConfig, AppState, build_router, crypto};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::{TcpListener, TcpStream},
+};
+use totp_server::{AppConfig, AppState, build_router, crypto, store::Store};
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     match std::env::args().nth(1).as_deref() {
         Some("keygen") => keygen(),
+        Some("migrate") => migrate().await,
+        Some("healthcheck") => healthcheck().await,
         Some("--version" | "-V") => {
             println!("totp-server {}", env!("CARGO_PKG_VERSION"));
             Ok(())
@@ -87,6 +93,53 @@ async fn shutdown_signal() {
     }
 }
 
+/// Apply the embedded migrations and exit. Meant for a release-phase or
+/// pre-deploy job when `database.run_migrations_on_start` is off.
+async fn migrate() -> anyhow::Result<()> {
+    init_tracing();
+    let cfg = AppConfig::load().context("failed to load configuration")?;
+    Store::migrate(&cfg.database)
+        .await
+        .context("failed to apply migrations")?;
+    tracing::info!("migrations applied; schema is current");
+    Ok(())
+}
+
+/// Probe the running server's `/livez` (for the container HEALTHCHECK, which
+/// has no curl). Exits non-zero unless it answers 200.
+async fn healthcheck() -> anyhow::Result<()> {
+    let cfg = AppConfig::load().context("failed to load configuration")?;
+    let host = match cfg.server.host.as_str() {
+        "0.0.0.0" | "::" | "[::]" => "127.0.0.1",
+        host => host,
+    };
+    let addr = format!("{host}:{}", cfg.server.port);
+    let timeout = Duration::from_secs(3);
+
+    let mut stream = tokio::time::timeout(timeout, TcpStream::connect(&addr))
+        .await
+        .with_context(|| format!("timed out connecting to {addr}"))?
+        .with_context(|| format!("failed to connect to {addr}"))?;
+    stream
+        .write_all(
+            format!("GET /livez HTTP/1.0\r\nHost: {addr}\r\nConnection: close\r\n\r\n").as_bytes(),
+        )
+        .await?;
+    let mut response = Vec::new();
+    tokio::time::timeout(timeout, stream.read_to_end(&mut response))
+        .await
+        .context("timed out waiting for the response")??;
+
+    let status_line = response
+        .split(|&b| b == b'\n')
+        .next()
+        .map(|line| String::from_utf8_lossy(line).trim().to_string())
+        .unwrap_or_default();
+    anyhow::ensure!(status_line.contains(" 200 "), "unhealthy: {status_line:?}");
+    println!("ok: {status_line}");
+    Ok(())
+}
+
 fn keygen() -> anyhow::Result<()> {
     println!("# Add these to settings.toml under [security], or export as env vars.");
     println!("# Keep them secret and stable — rotating them invalidates stored data.");
@@ -100,10 +153,12 @@ fn print_help() {
         "totp-server {}\n\n\
          A hardened RFC 6238 TOTP two-factor-authentication server.\n\n\
          USAGE:\n    \
-             totp-server            Run the HTTP server\n    \
-             totp-server keygen     Generate encryption + session keys\n    \
-             totp-server --version  Print version\n    \
-             totp-server --help     Print this help\n\n\
+             totp-server              Run the HTTP server\n    \
+             totp-server migrate      Apply database migrations and exit\n    \
+             totp-server healthcheck  Probe the running server's /livez (exit 0 = healthy)\n    \
+             totp-server keygen       Generate encryption + session keys\n    \
+             totp-server --version    Print version\n    \
+             totp-server --help       Print this help\n\n\
          CONFIG:\n    \
              Reads settings.toml (override path with TOTP_CONFIG) and TOTP_*\n    \
              environment variables. See settings.example.toml.",

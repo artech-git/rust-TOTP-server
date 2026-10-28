@@ -20,7 +20,12 @@ use axum::{
 };
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
-use totp_server::{AppConfig, AppState, build_router, config::Argon2Config, totp::TotpService};
+use totp_server::{
+    AppConfig, AppState, build_router,
+    config::{Argon2Config, RateLimitBackendKind},
+    store::Store,
+    totp::TotpService,
+};
 use tower::ServiceExt;
 
 /// Build the app against a fresh, isolated schema, or `None` when no test
@@ -31,6 +36,22 @@ async fn test_app() -> Option<(Router, AppState)> {
 
 /// Like [`test_app`], with a hook to adjust the configuration first.
 async fn test_app_with(customize: impl FnOnce(&mut AppConfig)) -> Option<(Router, AppState)> {
+    let mut cfg = fresh_config().await?;
+    customize(&mut cfg);
+    let state = AppState::new(cfg).await.expect("state");
+    Some((build_router(state.clone()), state))
+}
+
+/// A second, independent `AppState` on the same schema: stands in for another
+/// replica of the service behind a load balancer.
+async fn replica_of(state: &AppState) -> Router {
+    let cfg = (*state.cfg).clone();
+    build_router(AppState::new(cfg).await.expect("replica state"))
+}
+
+/// Test configuration pointing at a fresh, isolated schema, or `None` when no
+/// test database is configured (the caller then skips the test).
+async fn fresh_config() -> Option<AppConfig> {
     static SCHEMA_SEQ: AtomicU32 = AtomicU32::new(0);
 
     let Some(url) = std::env::var("TEST_DATABASE_URL")
@@ -70,9 +91,7 @@ async fn test_app_with(customize: impl FnOnce(&mut AppConfig)) -> Option<(Router
         ..Argon2Config::default()
     };
     cfg.security.recovery_code_count = 4;
-    customize(&mut cfg);
-    let state = AppState::new(cfg).await.expect("state");
-    Some((build_router(state.clone()), state))
+    Some(cfg)
 }
 
 /// Drop `totp_test_*` schemas left behind by earlier runs (other PIDs). Runs
@@ -660,4 +679,116 @@ async fn legacy_recovery_codes_without_a_lookup_prefix_still_work() {
     )
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+async fn wrong_login(app: &Router, email: &str) -> StatusCode {
+    call(
+        app,
+        "POST",
+        "/api/v1/login",
+        Some(json!({"email": email, "code": "000000"})),
+        None,
+    )
+    .await
+    .0
+}
+
+#[tokio::test]
+async fn memory_backend_limits_are_per_instance() {
+    let Some((a, state)) = test_app_with(|cfg| cfg.rate_limit.login_max_failures = 3).await else {
+        return;
+    };
+    let b = replica_of(&state).await;
+    for _ in 0..3 {
+        assert_eq!(
+            wrong_login(&a, "solo@example.com").await,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    assert_eq!(
+        wrong_login(&a, "solo@example.com").await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    // The other instance never saw the failures, so it still lets the
+    // attempt through: this is why replicas need the postgres backend.
+    assert_eq!(
+        wrong_login(&b, "solo@example.com").await,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test]
+async fn postgres_backend_shares_lockouts_and_ip_budgets_between_replicas() {
+    let Some((a, state)) = test_app_with(|cfg| {
+        cfg.rate_limit.backend = RateLimitBackendKind::Postgres;
+        cfg.rate_limit.login_max_failures = 3;
+        cfg.rate_limit.auth_ip_max_per_window = 5;
+    })
+    .await
+    else {
+        return;
+    };
+    let b = replica_of(&state).await;
+
+    // Three failures on replica A lock the account...
+    for _ in 0..3 {
+        assert_eq!(
+            wrong_login(&a, "shared@example.com").await,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    // ...and replica B enforces the lockout without having seen any of them.
+    assert_eq!(
+        wrong_login(&b, "shared@example.com").await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    // The per-IP budget (5) is shared as well: four attempts so far, one more
+    // passes, the next is throttled even though it targets another account
+    // through the other replica.
+    assert_eq!(
+        wrong_login(&b, "other@example.com").await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        wrong_login(&a, "third@example.com").await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+}
+
+#[tokio::test]
+async fn startup_verifies_the_schema_when_migrations_are_not_applied_on_start() {
+    let Some(mut cfg) = fresh_config().await else {
+        return;
+    };
+    cfg.database.run_migrations_on_start = false;
+    cfg.database.connect_retries = 0;
+
+    let err = AppState::new(cfg.clone())
+        .await
+        .err()
+        .expect("a replica must refuse to start against a schema with no migrations");
+    assert!(
+        format!("{err:#}").contains("totp-server migrate"),
+        "{err:#}"
+    );
+
+    Store::migrate(&cfg.database)
+        .await
+        .expect("migrate command");
+    AppState::new(cfg)
+        .await
+        .expect("schema is current once the migrate command has run");
+}
+
+#[tokio::test]
+async fn livez_is_served_alongside_health() {
+    let Some((app, _state)) = test_app().await else {
+        return;
+    };
+    let (status, body) = call(&app, "GET", "/livez", None, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["status"], "alive");
+    let (status, body) = call(&app, "GET", "/health", None, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["status"], "ok");
 }
