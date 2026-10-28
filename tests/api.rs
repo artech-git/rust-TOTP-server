@@ -3,9 +3,14 @@
 //! Point `TEST_DATABASE_URL` (or `DATABASE_URL`) at a throwaway Postgres and
 //! these run for real; each test gets its own schema so they stay isolated and
 //! independently re-runnable. With neither variable set (e.g. a machine with no
-//! Postgres) every test skips with a notice instead of failing — CI always
-//! provides a database, so coverage there is unaffected.
+//! Postgres) every test skips with a notice instead of failing. When `CI` is
+//! set the skip is disabled and a missing database fails the run, so a
+//! misconfigured pipeline can never go green with zero coverage.
+//!
+//! Schemas from a previous run are dropped the first time a test connects, so
+//! a shared test database does not accumulate them.
 
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use axum::{
@@ -28,11 +33,18 @@ async fn test_app() -> Option<(Router, AppState)> {
         .ok()
         .filter(|u| !u.trim().is_empty())
     else {
+        assert!(
+            std::env::var_os("CI").is_none(),
+            "CI is set but no TEST_DATABASE_URL/DATABASE_URL is configured; \
+             the DB-backed tests must not be skipped in CI"
+        );
         eprintln!(
             "skipping DB-backed test: set TEST_DATABASE_URL (or DATABASE_URL) to a Postgres URL"
         );
         return None;
     };
+
+    sweep_stale_schemas(&url).await;
 
     let mut cfg = AppConfig::default();
     cfg.database.url = url;
@@ -54,6 +66,43 @@ async fn test_app() -> Option<(Router, AppState)> {
     cfg.security.recovery_code_count = 4;
     let state = AppState::new(cfg).await.expect("state");
     Some((build_router(state.clone()), state))
+}
+
+/// Drop `totp_test_*` schemas left behind by earlier runs (other PIDs). Runs
+/// once per test process; this run's own schemas are left for the next run.
+async fn sweep_stale_schemas(url: &str) {
+    static SWEPT: Mutex<bool> = Mutex::new(false);
+    {
+        let mut swept = SWEPT.lock().unwrap();
+        if *swept {
+            return;
+        }
+        *swept = true;
+    }
+
+    use sqlx::{Connection, Row, postgres::PgConnection};
+    let mut conn = PgConnection::connect(url).await.expect("connect for sweep");
+    let own_prefix = format!("totp_test_{}_", std::process::id());
+    let stale: Vec<String> = sqlx::query(
+        "SELECT schema_name FROM information_schema.schemata \
+         WHERE schema_name LIKE 'totp_test_%' AND schema_name NOT LIKE $1",
+    )
+    .bind(format!("{own_prefix}%"))
+    .fetch_all(&mut conn)
+    .await
+    .expect("list schemas")
+    .into_iter()
+    .map(|r| r.get::<String, _>("schema_name"))
+    .collect();
+    for schema in stale {
+        // Names come from information_schema and match our own pattern, so
+        // quoting them is sufficient.
+        sqlx::query(&format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"))
+            .execute(&mut conn)
+            .await
+            .expect("drop stale schema");
+    }
+    conn.close().await.ok();
 }
 
 async fn call(

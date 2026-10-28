@@ -1,0 +1,11 @@
+# Configuration for `cargo audit` (used locally and by the CI "Dependency
+# advisories" job, which runs with --deny warnings).
+[advisories]
+ignore = [
+    # RUSTSEC-2023-0071: Marvin timing side-channel in the `rsa` crate.
+    # `rsa` is only reached transitively through sqlx (see `cargo tree -i rsa`);
+    # this server talks to Postgres, whose SCRAM/MD5 authentication never uses
+    # RSA, so the affected code is unreachable here. Upstream has no fixed
+    # release. Revisit whenever sqlx is upgraded.
+    "RUSTSEC-2023-0071",
+]

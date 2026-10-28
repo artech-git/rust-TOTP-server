@@ -201,8 +201,12 @@ TEST_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:54322/postgres cargo te
 ```
 
 Without that variable the DB-backed tests **skip** (with a notice) rather than fail, so the
-unit tests still run anywhere. CI (GitHub Actions) spins up a `postgres:16` service and runs
-fmt, clippy (`-D warnings`), the full test suite, and a Docker build on every push and PR.
+unit tests still run anywhere; with `CI` set they refuse to skip. Each run also drops the
+test schemas a previous run left behind. CI (GitHub Actions) spins up a `postgres:16`
+service and runs fmt, clippy (`-D warnings`), the full test suite, `cargo audit` against
+the lockfile, a `gitleaks` secret scan, and a Docker build on every push and PR. Dependabot
+keeps Cargo, Actions and Docker dependencies current, and tagging `vX.Y.Z` publishes the
+image to GHCR via the release workflow.
 
 ## Security notes
 

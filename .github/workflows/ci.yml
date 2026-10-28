@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-Dwarnings"
@@ -34,6 +37,9 @@ jobs:
 
     env:
       TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+      # With CI set, the DB-backed tests refuse to skip: a missing or broken
+      # database fails the job instead of silently passing with no coverage.
+      CI: "true"
 
     steps:
       - uses: actions/checkout@v4
@@ -47,6 +53,33 @@ jobs:
         run: cargo clippy --all-targets --all-features
       - name: Test
         run: cargo test --all-features
+
+  audit:
+    name: Dependency advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      # Fails on any RustSec advisory against Cargo.lock (including the TLS
+      # stack sqlx uses to reach Postgres). Dependabot keeps the lockfile moving;
+      # this catches the window between an advisory and the bump.
+      - name: cargo audit
+        run: cargo audit --deny warnings
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Scan the whole history of the pushed ref, not just the tip.
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   docker:
     name: Docker build
