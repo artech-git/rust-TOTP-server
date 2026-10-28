@@ -5,7 +5,7 @@ use sqlx::{
     postgres::{PgConnectOptions, PgConnection, PgPool, PgPoolOptions, PgRow},
 };
 
-use crate::config::DatabaseConfig;
+use crate::{config::DatabaseConfig, recovery::HashedCode};
 
 pub fn unix_now() -> i64 {
     SystemTime::now()
@@ -111,30 +111,32 @@ impl Store {
     }
 
     /// Create a pending (unconfirmed) enrollment, or reset the secret of an
-    /// existing unconfirmed one. Returns `false` when the email already
-    /// belongs to a confirmed account (nothing is modified in that case).
+    /// existing unconfirmed one. Returns the id of the row that persisted (an
+    /// existing pending row keeps its original id), or `None` when the email
+    /// already belongs to a confirmed account (nothing is modified then).
     pub async fn upsert_pending_user(
         &self,
         id: &str,
         email: &str,
         secret_enc: &[u8],
-    ) -> Result<bool, sqlx::Error> {
-        let result = sqlx::query(
+    ) -> Result<Option<String>, sqlx::Error> {
+        let row = sqlx::query(
             "INSERT INTO users (id, email, secret_enc, totp_confirmed, last_used_period, created_at, updated_at) \
              VALUES ($1, $2, $3, FALSE, 0, $4, $4) \
              ON CONFLICT (email) DO UPDATE SET \
                secret_enc = EXCLUDED.secret_enc, \
                last_used_period = 0, \
                updated_at = EXCLUDED.updated_at \
-             WHERE users.totp_confirmed = FALSE",
+             WHERE users.totp_confirmed = FALSE \
+             RETURNING id",
         )
         .bind(id)
         .bind(email)
         .bind(secret_enc)
         .bind(unix_now())
-        .execute(&self.pool)
+        .fetch_optional(&self.pool)
         .await?;
-        Ok(result.rows_affected() > 0)
+        Ok(row.map(|r| r.get("id")))
     }
 
     pub async fn get_user_by_email(&self, email: &str) -> Result<Option<UserRecord>, sqlx::Error> {
@@ -184,36 +186,47 @@ impl Store {
         Ok(result.rows_affected() > 0)
     }
 
-    /// Replace all recovery codes for a user with a fresh set (single tx).
+    /// Replace all recovery codes for a user with a fresh set (single tx,
+    /// one bulk insert).
     pub async fn replace_recovery_codes(
         &self,
         user_id: &str,
-        code_hashes: &[String],
+        codes: &[HashedCode],
     ) -> Result<(), sqlx::Error> {
+        let hashes: Vec<&str> = codes.iter().map(|c| c.hash.as_str()).collect();
+        let lookups: Vec<&str> = codes.iter().map(|c| c.lookup.as_str()).collect();
         let mut tx = self.pool.begin().await?;
         sqlx::query("DELETE FROM recovery_codes WHERE user_id = $1")
             .bind(user_id)
             .execute(&mut *tx)
             .await?;
-        for hash in code_hashes {
-            sqlx::query("INSERT INTO recovery_codes (user_id, code_hash) VALUES ($1, $2)")
-                .bind(user_id)
-                .bind(hash)
-                .execute(&mut *tx)
-                .await?;
-        }
+        sqlx::query(
+            "INSERT INTO recovery_codes (user_id, code_hash, lookup) \
+             SELECT $1, hash, lookup FROM UNNEST($2::text[], $3::text[]) AS t(hash, lookup)",
+        )
+        .bind(user_id)
+        .bind(&hashes)
+        .bind(&lookups)
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await
     }
 
-    pub async fn unused_recovery_codes(
+    /// Unused codes that could match a presented code: those sharing its
+    /// lookup prefix (normally one), plus any legacy rows written before the
+    /// prefix column existed.
+    pub async fn candidate_recovery_codes(
         &self,
         user_id: &str,
+        lookup: &str,
     ) -> Result<Vec<(i64, String)>, sqlx::Error> {
         let rows = sqlx::query(
             "SELECT id, code_hash FROM recovery_codes \
-             WHERE user_id = $1 AND used_at IS NULL ORDER BY id",
+             WHERE user_id = $1 AND used_at IS NULL AND (lookup = $2 OR lookup IS NULL) \
+             ORDER BY id",
         )
         .bind(user_id)
+        .bind(lookup)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows
