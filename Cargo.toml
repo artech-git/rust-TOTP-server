@@ -26,9 +26,9 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio",
 subtle = "2"
 thiserror = "2"
 time = { version = "0.3", features = ["formatting"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "net", "time"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "net", "sync", "time"] }
 totp-rs = { version = "5", features = ["otpauth"] }
-tower-http = { version = "0.6", features = ["trace", "timeout", "cors", "limit"] }
+tower-http = { version = "0.6", features = ["trace", "timeout", "cors", "limit", "request-id", "set-header"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 utoipa = { version = "5", features = ["axum_extras"] }
